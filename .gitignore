@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+*.eggs/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Virtual environment
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project-specific
+config.yaml
+reports/
+/memory/
+.cache/
+.gemini/
+repomix-output.xml

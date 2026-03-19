@@ -1,0 +1,84 @@
+# =============================================================
+# ChaHi — Cấu hình nguồn tin & LLM
+# =============================================================
+# Copy file này thành config.yaml và chỉnh sửa theo nhu cầu.
+# Sources phân nhóm: oil_macro, gold, crypto.
+# Mỗi source cần: name, url, type (hiện chỉ hỗ trợ "rss").
+# =============================================================
+
+sources:
+  oil_macro:
+    - name: "Reuters Business"
+      url: "https://feeds.reuters.com/reuters/businessNews"
+      type: rss
+
+    - name: "CNBC Economy"
+      url: "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258"
+      type: rss
+
+    - name: "Reuters Energy"
+      url: "https://feeds.reuters.com/reuters/UKEnergyNews"
+      type: rss
+
+  gold:
+    - name: "Kitco Gold News"
+      url: "https://www.kitco.com/rss/gold.xml"
+      type: rss
+
+  crypto:
+    - name: "CoinDesk"
+      url: "https://www.coindesk.com/arc/outboundfeeds/rss/"
+      type: rss
+
+    - name: "CoinTelegraph"
+      url: "https://cointelegraph.com/rss"
+      type: rss
+
+# =============================================================
+# LLM Settings — Chọn provider: "lm_studio" hoặc "gemini"
+# =============================================================
+llm_settings:
+  provider: "lm_studio"           # "lm_studio" | "gemini"
+
+  # ── LM Studio (local) ──
+  api_base: "http://localhost:1234/v1"
+  api_key: "lm-studio"
+  model_name: "qwen2.5-7b-instruct"
+  temperature: 0.1
+  timeout: 120                     # Giây. Tăng lên 300-600 nếu dùng model lớn (70B+)
+
+  # ── Gemini (cloud) — uncomment và đổi provider: "gemini" ──
+  # api_key: "AIza..."
+  # model_name: "gemini-2.0-flash"
+
+# =============================================================
+# Logging — Tùy chỉnh output (optional)
+# =============================================================
+logging:
+  level: "INFO"                    # DEBUG | INFO | WARNING | ERROR
+  # file: "chahi.log"             # Uncomment để log ra file
+
+# =============================================================
+# Memory — Bộ nhớ dài hạn (Feedback Loop)
+# =============================================================
+memory:
+  type: "file"                     # "file" | "mcp"
+  # protocol: "rest"               # "rest" | "jsonrpc" (chỉ dùng khi type=mcp)
+
+  # ── MCP Server (HTTP/SSE) — uncomment và đổi type: "mcp" ──
+  # url: "http://localhost:8080"
+  # workspace_path: "/Users/admin/projects/stock-light"
+  # protocol: "jsonrpc"            # "rest" = custom REST, "jsonrpc" = MCP SSE bridge chuẩn
+
+# =============================================================
+# Notifications — Gửi báo cáo qua Telegram / Discord (optional)
+# =============================================================
+notifications:
+  telegram:
+    enabled: false
+    bot_token: ""                  # Lấy từ @BotFather trên Telegram
+    chat_id: ""                    # Chat ID hoặc Group ID
+  discord:
+    enabled: false
+    webhook_url: ""                # Server Settings → Integrations → Webhooks
+
