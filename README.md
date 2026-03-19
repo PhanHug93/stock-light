@@ -247,6 +247,64 @@ Phiên 3: ...                    ←────────┘
 
 ---
 
+## 🧠 MCP Server — Bộ nhớ dài hạn cho AI
+
+ChaHi sử dụng **[TechStack Local MCP Server](https://github.com/PhanHug93/vibe-light-mcp)** làm Long-term Memory, cho phép AI đối chiếu nhận định qua nhiều phiên phân tích.
+
+> 🧠 MCP server that gives AI coding agents **persistent memory**, **tech stack detection**, and **secure command execution**. Works with Cursor, VS Code, Claude, Windsurf & more.
+
+### Tại sao ChaHi dùng MCP?
+
+| Tính năng MCP | ChaHi sử dụng |
+|---------------|---------------|
+| 🧠 **Memory 2 tầng** (L1 + L2) | Lưu nhận định phiên → L1 per-workspace. Bài học kinh nghiệm → L2 global |
+| 🔍 **Tìm kiếm ngữ nghĩa** | `search_memory` — tìm nhận định cũ liên quan bằng ChromaDB vector search |
+| 🔄 **Auto-recall** | `auto_recall` — tự nhớ lại context phiên trước mà không cần query thủ công |
+| 📦 **store_working_context** | Lưu tự động summary báo cáo sau mỗi phiên |
+| 🛡️ **Chạy local, bảo mật** | Data không ra ngoài, ChromaDB chạy trên máy cá nhân |
+
+### Quick Setup MCP cho ChaHi
+
+```bash
+# 1. Clone MCP Server
+git clone https://github.com/PhanHug93/vibe-light-mcp.git
+cd vibe-light-mcp
+
+# 2. Cài đặt
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+
+# 3. Chạy ChromaDB (Docker)
+docker run -d --name chromadb -p 8888:8000 chromadb/chroma:latest
+
+# 4. Chạy MCP Server
+python main.py                        # stdio mode (mặc định)
+python main.py --transport sse        # SSE mode (multi-client)
+```
+
+### Cấu hình ChaHi kết nối MCP
+
+```yaml
+# config.yaml
+memory:
+  type: "mcp"
+  url: "http://localhost:8080"
+  workspace_path: "/path/to/stock-light"
+  protocol: "rest"                    # "rest" | "jsonrpc"
+```
+
+### MCP Tools mà ChaHi sử dụng
+
+```
+search_memory        → Tìm nhận định vĩ mô phiên gần nhất
+auto_recall          → Fallback tự nhớ lại context
+store_working_context → Lưu summary báo cáo sau mỗi phiên
+```
+
+> 📖 Xem đầy đủ tài liệu MCP Server: **[github.com/PhanHug93/vibe-light-mcp](https://github.com/PhanHug93/vibe-light-mcp)**
+
+---
+
 ## 🧪 Phát triển & Test
 
 ```bash
