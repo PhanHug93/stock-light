@@ -258,92 +258,95 @@ class TestNotifierFactory:
 
     def test_empty_config_returns_empty(self) -> None:
         """Config rỗng → list rỗng."""
-        result = create_notifiers({})
+        result = create_notifiers([])
         assert result == []
 
     def test_none_config_returns_empty(self) -> None:
         """Config None-ish → list rỗng."""
-        result = create_notifiers({})
+        result = create_notifiers([])
         assert result == []
 
     def test_telegram_enabled(self) -> None:
         """Telegram enabled → 1 TelegramNotifier."""
-        config = {
-            "telegram": {
-                "enabled": True,
-                "bot_token": "123:TOKEN",
-                "chat_id": "-100123",
-            },
-        }
-        result = create_notifiers(config)
+        settings = [
+            NotificationSettings(
+                type="telegram",
+                enabled=True,
+                bot_token="123:TOKEN",
+                chat_id="-100123",
+            ),
+        ]
+        result = create_notifiers(settings)
         assert len(result) == 1
         assert isinstance(result[0], TelegramNotifier)
 
     def test_discord_enabled(self) -> None:
         """Discord enabled → 1 DiscordNotifier."""
-        config = {
-            "discord": {
-                "enabled": True,
-                "webhook_url": "https://discord.com/api/webhooks/123/abc",
-            },
-        }
-        result = create_notifiers(config)
+        settings = [
+            NotificationSettings(
+                type="discord",
+                enabled=True,
+                webhook_url="https://discord.com/api/webhooks/123/abc",
+            ),
+        ]
+        result = create_notifiers(settings)
         assert len(result) == 1
         assert isinstance(result[0], DiscordNotifier)
 
     def test_both_enabled(self) -> None:
         """Cả hai enabled → 2 notifiers."""
-        config = {
-            "telegram": {
-                "enabled": True,
-                "bot_token": "123:TOKEN",
-                "chat_id": "-100123",
-            },
-            "discord": {
-                "enabled": True,
-                "webhook_url": "https://discord.com/api/webhooks/123/abc",
-            },
-        }
-        result = create_notifiers(config)
+        settings = [
+            NotificationSettings(
+                type="telegram",
+                enabled=True,
+                bot_token="123:TOKEN",
+                chat_id="-100123",
+            ),
+            NotificationSettings(
+                type="discord",
+                enabled=True,
+                webhook_url="https://discord.com/api/webhooks/123/abc",
+            ),
+        ]
+        result = create_notifiers(settings)
         assert len(result) == 2
 
     def test_all_disabled(self) -> None:
         """Cả hai disabled → list rỗng."""
-        config = {
-            "telegram": {"enabled": False},
-            "discord": {"enabled": False},
-        }
-        result = create_notifiers(config)
+        settings = [
+            NotificationSettings(type="telegram", enabled=False),
+            NotificationSettings(type="discord", enabled=False),
+        ]
+        result = create_notifiers(settings)
         assert result == []
 
     def test_invalid_telegram_config_skipped(self) -> None:
-        """Cấu hình Telegram lỗi → bỏ qua, không crash."""
-        config = {
-            "telegram": {
-                "enabled": True,
-                "bot_token": "",  # Missing → ValueError
-                "chat_id": "-100123",
-            },
-        }
-        result = create_notifiers(config)
-        assert result == []  # Bỏ qua, không crash
+        """Cấu hình Telegram lỗi (entity level) → ValueError."""
+        with pytest.raises(ValueError, match="bot_token"):
+            NotificationSettings(
+                type="telegram",
+                enabled=True,
+                bot_token="",
+                chat_id="-100123",
+            )
 
     def test_create_notification_manager_returns_manager(self) -> None:
         """create_notification_manager trả về NotificationManager."""
-        config = {
-            "telegram": {
-                "enabled": True,
-                "bot_token": "123:TOKEN",
-                "chat_id": "-100123",
-            },
-        }
-        manager = create_notification_manager(config)
+        settings = [
+            NotificationSettings(
+                type="telegram",
+                enabled=True,
+                bot_token="123:TOKEN",
+                chat_id="-100123",
+            ),
+        ]
+        manager = create_notification_manager(settings)
         assert isinstance(manager, NotificationManager)
         assert manager.client_count == 1
 
     def test_create_notification_manager_empty(self) -> None:
-        """Empty config → NotificationManager rỗng."""
-        manager = create_notification_manager({})
+        """Empty settings → NotificationManager rỗng."""
+        manager = create_notification_manager([])
         assert isinstance(manager, NotificationManager)
         assert manager.client_count == 0
 
