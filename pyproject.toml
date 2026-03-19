@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "chahi"
-version = "0.0.1"
+version = "0.0.3"
 description = "ChaHi — CLI tool phân tích tin tức tài chính vĩ mô thông qua Local LLM"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -12,10 +12,14 @@ license = {text = "MIT"}
 dependencies = [
     "beautifulsoup4>=4.12",
     "feedparser>=6.0",
+    "filelock>=3.13",
     "google-genai>=1.0",
     "openai>=1.0",
+    "pebble>=5.0",
     "pyyaml>=6.0",
     "requests>=2.31",
+    "tiktoken>=0.7.0",
+    "trafilatura>=1.8.0",
 ]
 
 [project.optional-dependencies]

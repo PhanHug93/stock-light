@@ -8,7 +8,11 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 import pytest
 import requests
@@ -26,40 +30,30 @@ from chahi.infrastructure.rss.rss_fetcher import RSSNewsFetcher, _smart_truncate
 
 
 class TestSmartTruncate:
-    """Tests cho _smart_truncate() — word-boundary truncation."""
+    """Tests cho _smart_truncate() — token-based truncation."""
 
     def test_short_text_unchanged(self) -> None:
-        """Text ngắn hơn max_chars phải giữ nguyên."""
+        """Text ngắn hơn token budget phải giữ nguyên."""
         assert _smart_truncate("Ngắn gọn", 500) == "Ngắn gọn"
 
     def test_exact_length_unchanged(self) -> None:
-        """Text đúng max_chars phải giữ nguyên."""
-        text = "A" * 500
-        assert _smart_truncate(text, 500) == text
+        """Text vừa đủ budget phải giữ nguyên."""
+        text = "hello " * 10  # ~10 tokens
+        assert _smart_truncate(text.strip(), 500) == text.strip()
 
-    def test_cuts_at_word_boundary(self) -> None:
-        """Phải cắt tại khoảng trắng gần nhất, không cắt ngang từ."""
-        text = "Lạm phát tăng lên 5.5% trong tháng này gây lo ngại"
-        result = _smart_truncate(text, 30)
+    def test_cuts_when_over_budget(self) -> None:
+        """Text vượt token budget phải bị cắt."""
+        text = "Lạm phát tăng lên " * 100  # > 100 tokens
+        result = _smart_truncate(text, 10)
         assert result.endswith("…")
-        assert "%" in result  # "5.5%" phải được giữ nguyên
-        # Không cắt ngang từ
-        assert not result[-2].isalpha() or result[-1] == "…"
-
-    def test_preserves_numbers(self) -> None:
-        """Số liệu quan trọng không bị cắt ngang."""
-        text = "Giá dầu $105.50 per barrel tăng mạnh"
-        result = _smart_truncate(text, 20)
-        assert "…" in result
-        # Phải cắt tại word boundary trước "$105.50"
-        assert "$105" not in result or "$105.50" in result
+        assert len(result) < len(text)
 
     def test_single_long_word_hard_cut(self) -> None:
-        """Từ dài hơn max_chars phải cắt cứng (fallback)."""
-        text = "A" * 1000
-        result = _smart_truncate(text, 500)
-        assert len(result) == 501  # 500 + "…"
+        """Từ dài hơn budget phải bị cắt."""
+        text = "A" * 10000
+        result = _smart_truncate(text, 50)
         assert result.endswith("…")
+        assert len(result) < len(text)
 
     def test_empty_string(self) -> None:
         """Chuỗi rỗng phải giữ nguyên."""
@@ -331,6 +325,70 @@ class TestMemoryFactory:
 
 
 # ─────────────────────────────────────────────────────────────
+# FileMemoryManager File Locking
+# ─────────────────────────────────────────────────────────────
+
+
+class TestFileMemoryManagerLocking:
+    """Tests cho FileLock trong FileMemoryManager."""
+
+    def test_creates_lock_file(self, tmp_path: Path) -> None:
+        """FileMemoryManager phải tạo FileLock instance."""
+        from filelock import FileLock
+
+        from chahi.infrastructure.memory.file_memory_manager import (
+            FileMemoryManager,
+        )
+
+        mgr = FileMemoryManager(memory_dir=tmp_path)
+        mgr.save_context("Test data")
+
+        # Verify lock exists and is a FileLock
+        assert hasattr(mgr, "_lock")
+        assert isinstance(mgr._lock, FileLock)
+        # Verify data was saved correctly
+        assert (tmp_path / "last_context.md").exists()
+
+    def test_save_and_retrieve_under_lock(self, tmp_path: Path) -> None:
+        """Save → Retrieve phải trả về đúng dữ liệu dưới lock."""
+        from chahi.infrastructure.memory.file_memory_manager import (
+            FileMemoryManager,
+        )
+
+        mgr = FileMemoryManager(memory_dir=tmp_path)
+        mgr.save_context("Nhận định test")
+
+        result = mgr.retrieve_last_context()
+        assert result is not None
+        assert "Nhận định test" in result
+
+    def test_lock_timeout_raises(self, tmp_path: Path) -> None:
+        """Lock bị giữ bởi process khác → RuntimeError sau timeout."""
+        from filelock import FileLock
+
+        from chahi.infrastructure.memory.file_memory_manager import (
+            FileMemoryManager,
+        )
+
+        mgr = FileMemoryManager(memory_dir=tmp_path)
+        # Pre-create file to avoid early return
+        (tmp_path / "last_context.md").write_text("old data")
+
+        # Hold the lock externally
+        lock_path = str(tmp_path / "last_context.md.lock")
+        external_lock = FileLock(lock_path, timeout=0)
+        external_lock.acquire()
+
+        try:
+            # Override lock timeout to 0 for fast test
+            mgr._lock = FileLock(lock_path, timeout=0)
+            with pytest.raises(RuntimeError, match="lock"):
+                mgr.retrieve_last_context()
+        finally:
+            external_lock.release()
+
+
+# ─────────────────────────────────────────────────────────────
 # MCPHttpMemoryManager (mocked HTTP)
 # ─────────────────────────────────────────────────────────────
 
@@ -378,7 +436,8 @@ class TestMCPHttpMemoryManager:
             mock_call.assert_called_once()
             args = mock_call.call_args[1]
             assert args["tool_name"] == "store_working_context"
-            assert args["arguments"]["text_data"] == "Test summary"
+            assert "Test summary" in args["arguments"]["text_data"]
+            assert "[ChaHi Report" in args["arguments"]["text_data"]
 
     def test_connection_error_graceful(self) -> None:
         """Lỗi kết nối MCP phải trả None, không crash."""

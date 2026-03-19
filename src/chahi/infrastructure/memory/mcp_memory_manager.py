@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 import requests
@@ -59,36 +60,63 @@ class MCPHttpMemoryManager(IMemoryManager):
             self._protocol,
         )
 
+    def close(self) -> None:
+        """Đóng HTTP session, giải phóng socket connections."""
+        self._session.close()
+        logger.debug("MCPHttpMemoryManager session closed.")
+
     def retrieve_last_context(self) -> str | None:
         """Truy xuất nhận định phiên gần nhất từ MCP server.
 
-        Gọi tool ``search_memory`` với query tìm nhận định vĩ mô.
-        Fallback: gọi ``auto_recall`` nếu search_memory thất bại.
+        Dùng temporal query thử lùi 7 ngày (gần nhất trước) để tránh:
+        - RAG anti-pattern (semantic search sai thời gian)
+        - Weekend Blindspot (thứ 2 query "hôm qua" = Chủ Nhật → rỗng)
+        - RAG Temporal Illusion (ChromaDB trả nearest neighbor dù sai ngày)
+
+        Sau khi MCP trả kết quả, **kiểm tra date marker** trong text
+        để đảm bảo kết quả thực sự thuộc ngày đang tìm.
 
         Returns:
             Nhận định cũ dạng text, hoặc None nếu không có/lỗi.
         """
-        # ── Thử search_memory trước ──
-        result = self._call_tool(
-            tool_name="search_memory",
-            arguments={
-                "query": "nhận định phân tích vĩ mô phiên gần nhất ChaHi",
-                "workspace_path": self._workspace_path,
-                "n_results": 1,
-            },
-        )
+        _MAX_LOOKBACK_DAYS = 7  # noqa: N806
 
-        if result is not None:
-            text = self._extract_text_from_result(result)
-            if text:
-                logger.info("  Retrieve từ search_memory: %d chars", len(text))
-                return text
+        now = datetime.now(tz=UTC)
+        for days_ago in range(1, _MAX_LOOKBACK_DAYS + 1):
+            target_date = (now - timedelta(days=days_ago)).strftime("%Y-%m-%d")
 
-        # ── Fallback: auto_recall ──
+            # ── search_memory với ngày cụ thể ──
+            result = self._call_tool(
+                tool_name="search_memory",
+                arguments={
+                    "query": f"nhận định phân tích vĩ mô ChaHi ngày {target_date}",
+                    "workspace_path": self._workspace_path,
+                    "n_results": 1,
+                },
+            )
+
+            if result is not None:
+                text = self._extract_text_from_result(result)
+                if text and self._verify_date_in_text(text, target_date):
+                    logger.info(
+                        "  Retrieve từ search_memory (ngày %s, -%dd): %d chars",
+                        target_date,
+                        days_ago,
+                        len(text),
+                    )
+                    return text
+                if text:
+                    logger.debug(
+                        "  MCP trả kết quả nhưng KHÔNG chứa ngày %s "
+                        "(ChromaDB nearest neighbor), bỏ qua.",
+                        target_date,
+                    )
+
+        # ── Fallback cuối: auto_recall không chỉ định ngày ──
         result = self._call_tool(
             tool_name="auto_recall",
             arguments={
-                "user_message": "báo cáo phân tích vĩ mô hôm qua",
+                "user_message": "báo cáo phân tích vĩ mô gần nhất ChaHi",
                 "workspace_path": self._workspace_path,
                 "n_results": 1,
             },
@@ -97,25 +125,48 @@ class MCPHttpMemoryManager(IMemoryManager):
         if result is not None:
             text = self._extract_text_from_result(result)
             if text:
-                logger.info("  Retrieve từ auto_recall: %d chars", len(text))
+                logger.info("  Retrieve từ auto_recall (fallback): %d chars", len(text))
                 return text
 
         logger.info("  Không tìm thấy nhận định cũ trong MCP.")
         return None
 
+    @staticmethod
+    def _verify_date_in_text(text: str, target_date: str) -> bool:
+        """Kiểm tra text có thực sự chứa ngày target_date không.
+
+        Chống lại RAG Temporal Illusion: ChromaDB luôn trả nearest
+        neighbor, nên cần xác minh ngày trong kết quả.
+
+        Kiểm tra 3 dạng:
+        - ``[ChaHi Report YYYY-MM-DD]`` (marker chính thức)
+        - ``chahi_macro_report_YYYY-MM-DD`` (metadata_source)
+        - ``YYYY-MM-DD`` (date xuất hiện bất kỳ đâu)
+        """
+        return target_date in text
+
     def save_context(self, context_data: str) -> None:
         """Lưu nhận định mới vào MCP server.
 
         Gọi tool ``store_working_context`` để lưu vào L1 (per-workspace).
+        Metadata_source chứa ngày ISO để hỗ trợ temporal retrieval.
+        Embed ``[ChaHi Report YYYY-MM-DD]`` marker trong text để
+        chống RAG Temporal Illusion khi retrieve.
 
         Args:
             context_data: Nội dung nhận định cần lưu.
         """
+        today = datetime.now(tz=UTC).strftime("%Y-%m-%d")
+
+        # Embed date marker để retrieve có thể validate
+        date_marker = f"[ChaHi Report {today}]"
+        stamped_data = f"{date_marker}\n\n{context_data}"
+
         result = self._call_tool(
             tool_name="store_working_context",
             arguments={
-                "text_data": context_data,
-                "metadata_source": "chahi_macro_report",
+                "text_data": stamped_data,
+                "metadata_source": f"chahi_macro_report_{today}",
                 "workspace_path": self._workspace_path,
                 "tech_stack": "general",
             },

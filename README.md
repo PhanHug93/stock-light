@@ -70,8 +70,15 @@ source .venv/bin/activate        # macOS/Linux
 ### Bước 2 — Cài dependencies
 
 ```bash
+# Cài từ lockfile (khuyến nghị — reproducible builds)
+pip install -r requirements.lock
 pip install -e ".[dev]"
 ```
+
+> **Regenerate lockfile** khi thêm/đổi dependency:
+> ```bash
+> pip-compile pyproject.toml -o requirements.lock --strip-extras --no-header
+> ```
 
 | Package | Vai trò |
 |---------|---------|
@@ -81,6 +88,9 @@ pip install -e ".[dev]"
 | `openai` | Kết nối LM Studio (OpenAI-compatible) |
 | `google-genai` | Kết nối Google Gemini |
 | `pyyaml` | Đọc config YAML |
+| `tiktoken` | Đếm token chính xác (LLM budget) |
+| `trafilatura` | Deep Scraper — bóc tách full-text |
+| `filelock` | File locking — an toàn concurrent |
 
 ### Bước 3 — Tạo config
 

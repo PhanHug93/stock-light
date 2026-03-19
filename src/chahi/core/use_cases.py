@@ -158,8 +158,10 @@ _SUMMARY_RE = re.compile(
 )
 
 # ── Ngân sách token tối đa cho user_content ──
-# 100_000 chars ≈ 33_000 tokens — hardware mạnh, không cần chắt bóp
-_MAX_CONTEXT_CHARS: int = 100_000
+# 28K tokens ≈ an toàn cho model 32K context (chừa chỗ cho system prompt)
+# Vietnamese text: ~1 token / 1.7 chars (conservative)
+_MAX_CONTEXT_TOKENS: int = 28_000
+_CHARS_PER_TOKEN: float = 1.7  # Vietnamese heuristic
 
 # ── Category names (tiếng Việt) cho MAP prompt ──
 _CATEGORY_NAMES: dict[str, str] = {
@@ -328,7 +330,11 @@ class GenerateMacroReportUseCase:
             return ""
 
     def _map_analyze_all(self, context: AnalysisContext) -> dict[str, str]:
-        """Chạy MAP song song cho cả 3 nhóm tài sản.
+        """Chạy MAP cho cả 3 nhóm tài sản.
+
+        Tự động chọn chế độ:
+        - Cloud LLM (Gemini): song song qua ThreadPoolExecutor.
+        - Local LLM (LM Studio): tuần tự để tránh nghẽn queue.
 
         Args:
             context: AnalysisContext chứa tin tức.
@@ -344,16 +350,28 @@ class GenerateMacroReportUseCase:
 
         results: dict[str, str] = {}
 
-        with ThreadPoolExecutor(max_workers=self._MAX_MAP_WORKERS) as pool:
-            future_map = {
-                pool.submit(self._analyze_category, name, articles): name
-                for name, articles in tasks
-            }
+        if self._llm_client.supports_concurrency:
+            # ── Cloud LLM: song song (auto-scaling) ──
+            logger.info("  MAP mode: PARALLEL (cloud LLM)")
+            with ThreadPoolExecutor(max_workers=self._MAX_MAP_WORKERS) as pool:
+                future_map = {
+                    pool.submit(self._analyze_category, name, articles): name
+                    for name, articles in tasks
+                }
 
-            for future in as_completed(future_map):
-                name = future_map[future]
+                for future in as_completed(future_map):
+                    name = future_map[future]
+                    try:
+                        results[name] = future.result()
+                    except Exception as exc:
+                        logger.warning("MAP [%s] exception: %s", name, exc)
+                        results[name] = ""
+        else:
+            # ── Local LLM: tuần tự (queue-based, tránh timeout) ──
+            logger.info("  MAP mode: SEQUENTIAL (local LLM)")
+            for name, articles in tasks:
                 try:
-                    results[name] = future.result()
+                    results[name] = self._analyze_category(name, articles)
                 except Exception as exc:
                     logger.warning("MAP [%s] exception: %s", name, exc)
                     results[name] = ""
@@ -408,16 +426,17 @@ class GenerateMacroReportUseCase:
 
         result = "\n".join(sections)
 
-        # ── Token budget guard ──
-        if len(result) > _MAX_CONTEXT_CHARS:
+        # ── Token budget guard (Vietnamese-safe heuristic) ──
+        estimated_tokens = int(len(result) / _CHARS_PER_TOKEN)
+        if estimated_tokens > _MAX_CONTEXT_TOKENS:
+            # Cắt tại character limit tương đương
+            max_chars = int(_MAX_CONTEXT_TOKENS * _CHARS_PER_TOKEN)
             logger.warning(
-                "REDUCE input quá dài (%d chars > %d). Cắt bớt.",
-                len(result),
-                _MAX_CONTEXT_CHARS,
+                "REDUCE input quá dài (~%d tokens > %d). Cắt bớt.",
+                estimated_tokens,
+                _MAX_CONTEXT_TOKENS,
             )
-            result = (
-                result[:_MAX_CONTEXT_CHARS] + "\n\n⚠️ (Đã cắt bớt do giới hạn token)"
-            )
+            result = result[:max_chars] + "\n\n⚠️ (Đã cắt bớt do giới hạn token)"
 
         return result
 

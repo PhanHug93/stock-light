@@ -218,11 +218,12 @@ class TestFetchNewsValid:
     def test_truncates_long_summary(
         self, mock_session_fn: Any, mock_parse: Any, mock_cache_cls: Any
     ) -> None:
-        """Summary dài hơn 5000 chars phải bị truncate."""
+        """Summary vượt token budget phải bị truncate."""
         mock_session = MagicMock()
         mock_session.get.return_value = _make_http_response()
         mock_session_fn.return_value = mock_session
-        long_summary = "A" * 10000
+        # Realistic text: each word = ~1 token, need > 1500 tokens
+        long_summary = "Giá dầu tăng mạnh hôm nay " * 500  # ~3500 tokens
         mock_parse.return_value = _make_feed(
             entries=[_make_entry(summary=long_summary)]
         )
@@ -230,7 +231,7 @@ class TestFetchNewsValid:
         fetcher = RSSNewsFetcher(source_name="Test")
         articles = fetcher.fetch_news("https://example.com/rss")
 
-        assert len(articles[0].summary) == 5001  # 5000 + "…"
+        assert len(articles[0].summary) < len(long_summary)
         assert articles[0].summary.endswith("…")
 
 
@@ -346,3 +347,212 @@ class TestURLSchemeValidation:
 
         src = SourceConfig(name="Local", url="http://localhost:3000/rss")
         assert src.url == "http://localhost:3000/rss"
+
+
+# ─────────────────────────────────────────────────────────────
+# Deep Scraper — _fetch_full_text() & Teaser Detection
+# ─────────────────────────────────────────────────────────────
+
+
+class TestDeepScraper:
+    """Tests cho Phase 10: Deep Web Scraper & Full-text Extraction."""
+
+    @patch("chahi.infrastructure.rss.rss_fetcher.RSSCache")
+    @patch("chahi.infrastructure.rss.rss_fetcher._trafilatura_extract")
+    @patch("chahi.infrastructure.rss.rss_fetcher._build_session")
+    def test_fetch_full_text_success(
+        self,
+        mock_session_fn: Any,
+        mock_extract: Any,
+        mock_cache_cls: Any,
+    ) -> None:
+        """_fetch_full_text trả về text khi extract thành công."""
+        mock_session = MagicMock()
+        mock_response = MagicMock()
+        mock_response.text = "<html><body>Full article</body></html>"
+        mock_response.raise_for_status = MagicMock()
+        mock_session.get.return_value = mock_response
+        mock_session_fn.return_value = mock_session
+
+        mock_extract.return_value = "Full article content here."
+
+        fetcher = RSSNewsFetcher(source_name="Test")
+        # Mock the CPU pool to call function directly (avoid pickle issues)
+        fetcher._cpu_pool = MagicMock()
+        future_mock = MagicMock()
+        future_mock.result.return_value = "Full article content here."
+        fetcher._cpu_pool.schedule.return_value = future_mock
+
+        result = fetcher._fetch_full_text("https://example.com/article")
+
+        assert result == "Full article content here."
+
+    @patch("chahi.infrastructure.rss.rss_fetcher.RSSCache")
+    @patch("chahi.infrastructure.rss.rss_fetcher._build_session")
+    def test_fetch_full_text_timeout(
+        self,
+        mock_session_fn: Any,
+        mock_cache_cls: Any,
+    ) -> None:
+        """_fetch_full_text trả về None khi timeout."""
+        mock_session = MagicMock()
+        mock_session.get.side_effect = requests.Timeout("timed out")
+        mock_session_fn.return_value = mock_session
+
+        fetcher = RSSNewsFetcher(source_name="Test")
+        result = fetcher._fetch_full_text("https://example.com/article")
+
+        assert result is None
+
+    @patch("chahi.infrastructure.rss.rss_fetcher.RSSCache")
+    @patch("chahi.infrastructure.rss.rss_fetcher._build_session")
+    def test_fetch_full_text_http_403(
+        self,
+        mock_session_fn: Any,
+        mock_cache_cls: Any,
+    ) -> None:
+        """_fetch_full_text trả về None khi bị 403 Forbidden."""
+        mock_session = MagicMock()
+        mock_response = MagicMock()
+        mock_response.status_code = 403
+        http_error = requests.HTTPError(response=mock_response)
+        mock_response.raise_for_status.side_effect = http_error
+        mock_session.get.return_value = mock_response
+        mock_session_fn.return_value = mock_session
+
+        fetcher = RSSNewsFetcher(source_name="Test")
+        result = fetcher._fetch_full_text("https://example.com/article")
+
+        assert result is None
+
+    @patch("chahi.infrastructure.rss.rss_fetcher.RSSCache")
+    @patch("chahi.infrastructure.rss.rss_fetcher.trafilatura.extract")
+    @patch("chahi.infrastructure.rss.rss_fetcher._build_session")
+    def test_fetch_full_text_extract_returns_none(
+        self,
+        mock_session_fn: Any,
+        mock_extract: Any,
+        mock_cache_cls: Any,
+    ) -> None:
+        """_fetch_full_text trả về None khi trafilatura extract trả None."""
+        mock_session = MagicMock()
+        mock_response = MagicMock()
+        mock_response.text = "<html></html>"
+        mock_response.raise_for_status = MagicMock()
+        mock_session.get.return_value = mock_response
+        mock_session_fn.return_value = mock_session
+
+        mock_extract.return_value = None
+
+        fetcher = RSSNewsFetcher(source_name="Test")
+        # Mock CPU pool
+        fetcher._cpu_pool = MagicMock()
+        future_mock = MagicMock()
+        future_mock.result.return_value = None
+        fetcher._cpu_pool.schedule.return_value = future_mock
+
+        result = fetcher._fetch_full_text("https://example.com/article")
+
+        assert result is None
+
+    @patch("chahi.infrastructure.rss.rss_fetcher.RSSCache")
+    @patch("chahi.infrastructure.rss.rss_fetcher.feedparser.parse")
+    @patch("chahi.infrastructure.rss.rss_fetcher._build_session")
+    def test_parse_entry_triggers_deep_scraper_on_short_summary(
+        self,
+        mock_session_fn: Any,
+        mock_parse: Any,
+        mock_cache_cls: Any,
+    ) -> None:
+        """Summary < 500 chars phải kích hoạt Deep Scraper."""
+        mock_session = MagicMock()
+        # First call = RSS fetch
+        mock_session.get.return_value = _make_http_response()
+        mock_session_fn.return_value = mock_session
+
+        # RSS entry with short summary (teaser)
+        short_summary = "Breaking news about oil prices."
+        mock_parse.return_value = _make_feed(
+            entries=[_make_entry(summary=short_summary)]
+        )
+
+        full_text = "Full article " * 100  # ~1300 chars
+
+        fetcher = RSSNewsFetcher(source_name="Test")
+        # Mock CPU pool to avoid pickle issues
+        fetcher._cpu_pool = MagicMock()
+        future_mock = MagicMock()
+        future_mock.result.return_value = full_text.strip()
+        fetcher._cpu_pool.schedule.return_value = future_mock
+        # Also need to mock the second session.get for Deep Scraper
+        deep_resp = MagicMock()
+        deep_resp.text = "<html>article</html>"
+        deep_resp.raise_for_status = MagicMock()
+        mock_session.get.side_effect = [
+            _make_http_response(),  # RSS fetch
+            deep_resp,  # Deep scraper fetch
+        ]
+
+        articles = fetcher.fetch_news("https://example.com/rss")
+
+        assert len(articles) == 1
+        # Summary should be replaced with full text
+        assert articles[0].summary != short_summary
+        assert "Full article" in articles[0].summary
+
+    @patch("chahi.infrastructure.rss.rss_fetcher.RSSCache")
+    @patch("chahi.infrastructure.rss.rss_fetcher.feedparser.parse")
+    @patch("chahi.infrastructure.rss.rss_fetcher._build_session")
+    def test_parse_entry_skips_deep_scraper_on_long_summary(
+        self,
+        mock_session_fn: Any,
+        mock_parse: Any,
+        mock_cache_cls: Any,
+    ) -> None:
+        """Summary >= 500 chars KHÔNG kích hoạt Deep Scraper."""
+        mock_session = MagicMock()
+        mock_session.get.return_value = _make_http_response()
+        mock_session_fn.return_value = mock_session
+
+        # Long enough summary (no teaser)
+        long_summary = "A" * 600
+        mock_parse.return_value = _make_feed(
+            entries=[_make_entry(summary=long_summary)]
+        )
+
+        fetcher = RSSNewsFetcher(source_name="Test")
+        articles = fetcher.fetch_news("https://example.com/rss")
+
+        assert len(articles) == 1
+        assert articles[0].summary == long_summary
+
+    @patch("chahi.infrastructure.rss.rss_fetcher.RSSCache")
+    @patch("chahi.infrastructure.rss.rss_fetcher.feedparser.parse")
+    @patch("chahi.infrastructure.rss.rss_fetcher._build_session")
+    def test_parse_entry_fallback_on_deep_scraper_failure(
+        self,
+        mock_session_fn: Any,
+        mock_parse: Any,
+        mock_cache_cls: Any,
+    ) -> None:
+        """Deep Scraper thất bại → fallback dùng RSS summary cũ."""
+        mock_session = MagicMock()
+        mock_http_resp = _make_http_response()
+        # First call = RSS fetch, second call = deep scraper (timeout)
+        mock_session.get.side_effect = [
+            mock_http_resp,
+            requests.Timeout("timed out"),
+        ]
+        mock_session_fn.return_value = mock_session
+
+        short_summary = "Short teaser."
+        mock_parse.return_value = _make_feed(
+            entries=[_make_entry(summary=short_summary)]
+        )
+
+        fetcher = RSSNewsFetcher(source_name="Test")
+        articles = fetcher.fetch_news("https://example.com/rss")
+
+        assert len(articles) == 1
+        # Should fallback to original short summary
+        assert articles[0].summary == short_summary
