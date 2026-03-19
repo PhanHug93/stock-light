@@ -22,15 +22,19 @@ from __future__ import annotations
 import logging
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date, datetime, timezone
+from datetime import date
+from typing import TYPE_CHECKING
 
-from chahi.core.entities import AnalysisContext, Article, SourceCategory, SourceConfig
-from chahi.core.interfaces import (
-    IConfigReader,
-    ILLMClient,
-    IMemoryManager,
-    INewsFetcher,
-)
+from chahi.core.entities import AnalysisContext, SourceCategory
+
+if TYPE_CHECKING:
+    from chahi.core.entities import Article, SourceConfig
+    from chahi.core.interfaces import (
+        IConfigReader,
+        ILLMClient,
+        IMemoryManager,
+        INewsFetcher,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -56,9 +60,10 @@ của nhóm **{category_name}** dưới đây và viết BẢN TÓM TẮT gồm 
 # ═════════════════════════════════════════════════════════════
 
 REDUCE_PROMPT: str = """\
-Bạn là Chuyên gia Kinh tế Vĩ mô hàng đầu với hơn 20 năm kinh nghiệm \
-phân tích thị trường tài chính toàn cầu, đặc biệt am hiểu sâu sắc về \
-Thị trường Chứng khoán Việt Nam (VN-Index) và nhóm cổ phiếu Ngân hàng.
+Bạn là Giám đốc Đầu tư (CIO) hàng đầu Việt Nam với hơn 20 năm kinh nghiệm \
+điều phối danh mục tài sản lớn, đặc biệt am hiểu sâu sắc về VN-Index và \
+nhóm cổ phiếu Ngân hàng. Bạn có tư duy quân sự: kỷ luật, tàn nhẫn khi sai, \
+và luôn ghi nhật ký chiến trận để không bao giờ lặp lại sai lầm.
 
 **NHIỆM VỤ**: Bạn nhận được 3 bản tóm tắt phân tích từ 3 nhóm tài sản \
 (Dầu & Vĩ mô, Vàng, Crypto). Hãy TỔNG HỢP và SUY LUẬN TÁC ĐỘNG CHÉO \
@@ -111,15 +116,42 @@ tỷ giá USD/VND, lãi suất, tăng trưởng tín dụng, nợ xấu.
 - Dự báo hướng đi cho ngày/tuần tiếp theo.
 - Spotlight: nhóm ngân hàng — mua/giữ/bán?
 
+## 7. 🧠 Sổ Tay Kinh Nghiệm
+**BẮT BUỘC** — Đây là mục QUAN TRỌNG NHẤT cho sự tiến bộ của bạn.
+
+Đọc kỹ phần [NHÌN LẠI QUÁ KHỨ] (nhật ký dự báo & bài học từ phiên trước \
+của chính bạn). Đối chiếu với tin tức thực tế hôm nay và thực hiện:
+
+- **Nếu dự báo SAI**: Tàn nhẫn tự kiểm điểm. Yếu tố nào bạn đã bỏ qua? \
+Dòng tiền đã bẻ lái vì tin tức nào? Đúc kết thành 1 QUY TẮC PHÂN TÍCH MỚI \
+(ví dụ: "Bài học: Khi có tin chiến tranh leo thang, bỏ qua yếu tố lạm phát — \
+dòng tiền sẽ ưu tiên trú ẩn vào Vàng trước khi quay lại cổ phiếu").
+- **Nếu dự báo ĐÚNG**: Ghi nhận yếu tố cốt lõi nào đã giúp dự báo chuẩn xác. \
+Viết thành 1 QUY TẮC ĐỂ PHÁT HUY \
+(ví dụ: "Kinh nghiệm: Khi DXY giảm liên tiếp 3 phiên + CPI hạ nhiệt → \
+Vàng và Crypto đồng loạt tăng, VN-Index hưởng lợi qua nhóm xuất khẩu").
+- **Nếu chưa có dữ liệu quá khứ** (lần đầu chạy): Ghi nhận 2-3 rủi ro/catalyst \
+cần theo dõi cho phiên tiếp theo.
+
+Format mỗi bài học:
+> 📝 **Bài học #{số}**: [Mô tả ngắn gọn quy tắc]
+> - Bối cảnh: [Tình huống dẫn tới bài học]
+> - Quy tắc: [Quy tắc phân tích rút ra]
+
 **QUY TẮC**:
 - Suy luận dựa trên DỮ LIỆU thực tế, không suy đoán vô căn cứ.
-- Ngôn ngữ chuyên nghiệp, súc tích, đi thẳng vào trọng tâm.
+- Ngôn ngữ chuyên nghiệp, súc tích, Giám đốc Đầu tư viết cho team.
 - Trả lời hoàn toàn bằng tiếng Việt.
 - Markdown chuẩn: heading, bullet points, bold/italic.
 - **TUYỆT ĐỐI** bắt đầu phần tổng kết bằng chính xác dòng: `## 6. 📋 Tổng kết`
+- **TUYỆT ĐỐI** bắt đầu phần kinh nghiệm bằng chính xác dòng: \
+`## 7. 🧠 Sổ Tay Kinh Nghiệm`
 """
 
-# ── Regex trích xuất Tổng kết (linh hoạt nhiều format LLM) ──
+# ── Regex trích xuất Tổng kết + Sổ Tay Kinh Nghiệm ──
+# Bắt từ "## Tổng kết" → lấy TOÀN BỘ nội dung đến hết file.
+# Nội dung trả về sẽ chứa CẢ mục 6 (Tổng kết) VÀ mục 7 (Sổ Tay Kinh Nghiệm)
+# để gửi nguyên khối vào IMemoryManager → phiên sau LLM đọc lại.
 _SUMMARY_RE = re.compile(
     r"##\s*(?:\d+\.?\s*)?(?:📋\s*)?[Tt]ổng\s*[Kk]ết.*?\n(.*)",
     re.DOTALL,
@@ -190,9 +222,7 @@ class GenerateMacroReportUseCase:
             try:
                 previous_context = self._memory.retrieve_last_context()
                 if previous_context:
-                    logger.info(
-                        "  → Có nhận định cũ: %d chars", len(previous_context)
-                    )
+                    logger.info("  → Có nhận định cũ: %d chars", len(previous_context))
                 else:
                     logger.info("  → Chưa có nhận định cũ (lần đầu chạy).")
             except Exception as exc:
@@ -230,9 +260,7 @@ class GenerateMacroReportUseCase:
 
         # ── Bước 5: REDUCE — Tổng hợp & Bản địa hóa ──
         logger.info("Bước 5/7: REDUCE — Tổng hợp & Bản địa hóa VN...")
-        reduce_input = self._format_reduce_input(
-            category_summaries, previous_context
-        )
+        reduce_input = self._format_reduce_input(category_summaries, previous_context)
         report = self._llm_client.analyze(
             system_prompt=REDUCE_PROMPT,
             user_content=reduce_input,
@@ -258,9 +286,7 @@ class GenerateMacroReportUseCase:
 
     _MAX_MAP_WORKERS: int = 3  # 3 nhóm tài sản song song
 
-    def _analyze_category(
-        self, category_name: str, articles: list[Article]
-    ) -> str:
+    def _analyze_category(self, category_name: str, articles: list[Article]) -> str:
         """MAP: Phân tích cục bộ 1 nhóm tài sản.
 
         Gửi danh sách articles cùng MAP_PROMPT tới LLM
@@ -295,19 +321,13 @@ class GenerateMacroReportUseCase:
                 system_prompt=system_prompt,
                 user_content=user_content,
             )
-            logger.info(
-                "  MAP [%s] → %d chars tóm tắt", category_name, len(result)
-            )
+            logger.info("  MAP [%s] → %d chars tóm tắt", category_name, len(result))
             return result
         except Exception as exc:
-            logger.warning(
-                "  MAP [%s] thất bại: %s", category_name, exc
-            )
+            logger.warning("  MAP [%s] thất bại: %s", category_name, exc)
             return ""
 
-    def _map_analyze_all(
-        self, context: AnalysisContext
-    ) -> dict[str, str]:
+    def _map_analyze_all(self, context: AnalysisContext) -> dict[str, str]:
         """Chạy MAP song song cho cả 3 nhóm tài sản.
 
         Args:
@@ -326,9 +346,7 @@ class GenerateMacroReportUseCase:
 
         with ThreadPoolExecutor(max_workers=self._MAX_MAP_WORKERS) as pool:
             future_map = {
-                pool.submit(
-                    self._analyze_category, name, articles
-                ): name
+                pool.submit(self._analyze_category, name, articles): name
                 for name, articles in tasks
             }
 
@@ -364,10 +382,13 @@ class GenerateMacroReportUseCase:
         today = date.today().strftime("%d/%m/%Y")
         sections: list[str] = [f"📅 Ngày phân tích: {today}\n"]
 
-        # ── Previous Context (Feedback Loop) ──
+        # ── Previous Context (Nhật ký Self-Reflection) ──
         if previous_context:
             sections.append("=" * 50)
-            sections.append("🔄 [NHÌN LẠI QUÁ KHỨ] — Nhận định phiên trước:")
+            sections.append(
+                "🔄 [NHÌN LẠI QUÁ KHỨ] — Nhật ký dự báo"
+                " & Bài học của bạn từ phiên trước:"
+            )
             sections.append("=" * 50)
             sections.append(previous_context)
             sections.append("")
@@ -394,7 +415,9 @@ class GenerateMacroReportUseCase:
                 len(result),
                 _MAX_CONTEXT_CHARS,
             )
-            result = result[:_MAX_CONTEXT_CHARS] + "\n\n⚠️ (Đã cắt bớt do giới hạn token)"
+            result = (
+                result[:_MAX_CONTEXT_CHARS] + "\n\n⚠️ (Đã cắt bớt do giới hạn token)"
+            )
 
         return result
 
@@ -481,16 +504,20 @@ class GenerateMacroReportUseCase:
 
 
 def _extract_summary(report: str) -> str:
-    """Trích xuất phần Tổng kết từ báo cáo Markdown.
+    """Trích xuất phần Tổng kết + Sổ Tay Kinh Nghiệm từ báo cáo.
 
-    Tìm section "## Tổng kết" và lấy toàn bộ nội dung phía sau.
+    Tìm section ``## 6. 📋 Tổng kết`` và lấy TOÀN BỘ nội dung phía sau,
+    bao gồm cả ``## 7. 🧠 Sổ Tay Kinh Nghiệm``. Khối này được gửi
+    nguyên vẹn vào ``IMemoryManager`` để phiên sau LLM đọc lại và
+    tự đối chiếu (Self-Reflection).
+
     Nếu không tìm được, lưu 500 ký tự cuối cùng của report.
 
     Args:
         report: Nội dung báo cáo Markdown đầy đủ.
 
     Returns:
-        Phần tổng kết đã trích xuất.
+        Phần tổng kết + kinh nghiệm đã trích xuất.
     """
     match = _SUMMARY_RE.search(report)
     if match:

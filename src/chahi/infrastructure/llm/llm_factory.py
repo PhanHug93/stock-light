@@ -8,12 +8,16 @@ thêm entry vào ``_PROVIDERS`` dict, không sửa code cũ.
 from __future__ import annotations
 
 import logging
-from typing import Callable
+from typing import TYPE_CHECKING
 
-from chahi.core.entities import LLMSettings
-from chahi.core.interfaces import ILLMClient
 from chahi.infrastructure.llm.gemini_client import GeminiClient
 from chahi.infrastructure.llm.lm_studio_client import LMStudioClient
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from chahi.core.entities import LLMSettings
+    from chahi.core.interfaces import ILLMClient
 
 logger = logging.getLogger(__name__)
 

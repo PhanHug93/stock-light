@@ -7,7 +7,6 @@ không cần kết nối internet khi test.
 from __future__ import annotations
 
 import time
-from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -17,7 +16,6 @@ import requests
 
 from chahi.core.entities import Article
 from chahi.infrastructure.rss.rss_fetcher import RSSNewsFetcher
-
 
 # ─────────────────────────────────────────────────────────────
 # Helpers
@@ -58,16 +56,16 @@ def _make_feed(
     return feed
 
 
-def _make_http_response(content: bytes = b"<rss>ok</rss>", status: int = 200) -> MagicMock:
+def _make_http_response(
+    content: bytes = b"<rss>ok</rss>", status: int = 200
+) -> MagicMock:
     """Tạo mock requests.Response."""
     resp = MagicMock()
     resp.content = content
     resp.status_code = status
     resp.raise_for_status = MagicMock()
     if status >= 400:
-        resp.raise_for_status.side_effect = requests.HTTPError(
-            f"HTTP {status}"
-        )
+        resp.raise_for_status.side_effect = requests.HTTPError(f"HTTP {status}")
     return resp
 
 
@@ -127,10 +125,11 @@ class TestCleanHTML:
 class TestFetchNewsValid:
     """Tests cho fetch_news() với feed hợp lệ."""
 
+    @patch("chahi.infrastructure.rss.rss_fetcher.RSSCache")
     @patch("chahi.infrastructure.rss.rss_fetcher.feedparser.parse")
     @patch("chahi.infrastructure.rss.rss_fetcher._build_session")
     def test_returns_articles(
-        self, mock_session_fn: Any, mock_parse: Any
+        self, mock_session_fn: Any, mock_parse: Any, mock_cache_cls: Any
     ) -> None:
         mock_session = MagicMock()
         mock_session.get.return_value = _make_http_response()
@@ -145,10 +144,11 @@ class TestFetchNewsValid:
         assert len(articles) == 2
         assert all(isinstance(a, Article) for a in articles)
 
+    @patch("chahi.infrastructure.rss.rss_fetcher.RSSCache")
     @patch("chahi.infrastructure.rss.rss_fetcher.feedparser.parse")
     @patch("chahi.infrastructure.rss.rss_fetcher._build_session")
     def test_maps_fields_correctly(
-        self, mock_session_fn: Any, mock_parse: Any
+        self, mock_session_fn: Any, mock_parse: Any, mock_cache_cls: Any
     ) -> None:
         mock_session = MagicMock()
         mock_session.get.return_value = _make_http_response()
@@ -172,10 +172,11 @@ class TestFetchNewsValid:
         assert article.summary == "The Fed held rates steady."
         assert article.source_name == "Reuters"
 
+    @patch("chahi.infrastructure.rss.rss_fetcher.RSSCache")
     @patch("chahi.infrastructure.rss.rss_fetcher.feedparser.parse")
     @patch("chahi.infrastructure.rss.rss_fetcher._build_session")
     def test_respects_limit(
-        self, mock_session_fn: Any, mock_parse: Any
+        self, mock_session_fn: Any, mock_parse: Any, mock_cache_cls: Any
     ) -> None:
         mock_session = MagicMock()
         mock_session.get.return_value = _make_http_response()
@@ -189,10 +190,11 @@ class TestFetchNewsValid:
 
         assert len(articles) == 5
 
+    @patch("chahi.infrastructure.rss.rss_fetcher.RSSCache")
     @patch("chahi.infrastructure.rss.rss_fetcher.feedparser.parse")
     @patch("chahi.infrastructure.rss.rss_fetcher._build_session")
     def test_skips_entry_without_title(
-        self, mock_session_fn: Any, mock_parse: Any
+        self, mock_session_fn: Any, mock_parse: Any, mock_cache_cls: Any
     ) -> None:
         mock_session = MagicMock()
         mock_session.get.return_value = _make_http_response()
@@ -210,16 +212,17 @@ class TestFetchNewsValid:
         assert len(articles) == 1
         assert articles[0].title == "Valid Article"
 
+    @patch("chahi.infrastructure.rss.rss_fetcher.RSSCache")
     @patch("chahi.infrastructure.rss.rss_fetcher.feedparser.parse")
     @patch("chahi.infrastructure.rss.rss_fetcher._build_session")
     def test_truncates_long_summary(
-        self, mock_session_fn: Any, mock_parse: Any
+        self, mock_session_fn: Any, mock_parse: Any, mock_cache_cls: Any
     ) -> None:
-        """Summary dài hơn 500 chars phải bị truncate."""
+        """Summary dài hơn 5000 chars phải bị truncate."""
         mock_session = MagicMock()
         mock_session.get.return_value = _make_http_response()
         mock_session_fn.return_value = mock_session
-        long_summary = "A" * 1000
+        long_summary = "A" * 10000
         mock_parse.return_value = _make_feed(
             entries=[_make_entry(summary=long_summary)]
         )
@@ -227,7 +230,7 @@ class TestFetchNewsValid:
         fetcher = RSSNewsFetcher(source_name="Test")
         articles = fetcher.fetch_news("https://example.com/rss")
 
-        assert len(articles[0].summary) == 501  # 500 + "…"
+        assert len(articles[0].summary) == 5001  # 5000 + "…"
         assert articles[0].summary.endswith("…")
 
 
@@ -272,10 +275,11 @@ class TestFetchNewsErrors:
         with pytest.raises(ConnectionError, match="HTTP"):
             fetcher.fetch_news("https://example.com/rss")
 
+    @patch("chahi.infrastructure.rss.rss_fetcher.RSSCache")
     @patch("chahi.infrastructure.rss.rss_fetcher.feedparser.parse")
     @patch("chahi.infrastructure.rss.rss_fetcher._build_session")
     def test_bozo_with_no_entries(
-        self, mock_session_fn: Any, mock_parse: Any
+        self, mock_session_fn: Any, mock_parse: Any, mock_cache_cls: Any
     ) -> None:
         """Feed malformed + no entries phải raise ConnectionError."""
         mock_session = MagicMock()
@@ -289,10 +293,11 @@ class TestFetchNewsErrors:
         with pytest.raises(ConnectionError, match="SAXParseException"):
             fetcher.fetch_news("https://example.com/rss")
 
+    @patch("chahi.infrastructure.rss.rss_fetcher.RSSCache")
     @patch("chahi.infrastructure.rss.rss_fetcher.feedparser.parse")
     @patch("chahi.infrastructure.rss.rss_fetcher._build_session")
     def test_bozo_with_entries_still_works(
-        self, mock_session_fn: Any, mock_parse: Any
+        self, mock_session_fn: Any, mock_parse: Any, mock_cache_cls: Any
     ) -> None:
         """Feed bozo nhưng có entries → vẫn parse bình thường."""
         mock_session = MagicMock()

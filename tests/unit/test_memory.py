@@ -8,15 +8,15 @@ Tests cho:
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
-import pytest
-
-from chahi.core.entities import LLMSettings, SourceCategory, SourceConfig
+from chahi.core.entities import SourceCategory, SourceConfig
 from chahi.core.use_cases import GenerateMacroReportUseCase, _extract_summary
 from chahi.infrastructure.memory.file_memory_manager import FileMemoryManager
 
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # ─────────────────────────────────────────────────────────────
 # FileMemoryManager
@@ -134,7 +134,9 @@ Nội dung...
 # ─────────────────────────────────────────────────────────────
 
 
-def _make_source(name: str = "Test", url: str = "https://example.com/rss") -> SourceConfig:
+def _make_source(
+    name: str = "Test", url: str = "https://example.com/rss"
+) -> SourceConfig:
     return SourceConfig(name=name, url=url, type="rss")
 
 
@@ -155,7 +157,9 @@ class TestFeedbackLoop:
                 title="Test",
                 summary="Summary",
                 source_name="Src",
-                published_date=MagicMock(strftime=MagicMock(return_value="01/01/2026 10:00")),
+                published_date=MagicMock(
+                    strftime=MagicMock(return_value="01/01/2026 10:00")
+                ),
                 url="https://example.com",
             )
         ]
@@ -192,7 +196,9 @@ class TestFeedbackLoop:
                 title="Test",
                 summary="Summary",
                 source_name="Src",
-                published_date=MagicMock(strftime=MagicMock(return_value="01/01/2026 10:00")),
+                published_date=MagicMock(
+                    strftime=MagicMock(return_value="01/01/2026 10:00")
+                ),
                 url="https://example.com",
             )
         ]
@@ -226,7 +232,9 @@ class TestFeedbackLoop:
                 title="Test",
                 summary="Summary",
                 source_name="Src",
-                published_date=MagicMock(strftime=MagicMock(return_value="01/01/2026 10:00")),
+                published_date=MagicMock(
+                    strftime=MagicMock(return_value="01/01/2026 10:00")
+                ),
                 url="https://example.com",
             )
         ]

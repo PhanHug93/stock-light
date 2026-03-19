@@ -1,8 +1,11 @@
-"""Unit tests cho domain entities: SourceCategory, SourceConfig, LLMSettings, Article, AnalysisContext."""
+"""Unit tests cho domain entities.
+
+SourceCategory, SourceConfig, LLMSettings, Article, AnalysisContext.
+"""
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
 import pytest
 
@@ -13,7 +16,6 @@ from chahi.core.entities import (
     SourceCategory,
     SourceConfig,
 )
-
 
 # ─────────────────────────────────────────────────────────────
 # SourceCategory
@@ -156,7 +158,7 @@ class TestArticle:
             title="Fed giữ nguyên lãi suất",
             summary="Federal Reserve quyết định giữ lãi suất.",
             source_name="Reuters",
-            published_date=datetime(2026, 3, 18, 10, 0, tzinfo=timezone.utc),
+            published_date=datetime(2026, 3, 18, 10, 0, tzinfo=UTC),
             url="https://reuters.com/fed-rate",
         )
 
@@ -178,7 +180,7 @@ class TestArticle:
                 title="   ",
                 summary="test",
                 source_name="test",
-                published_date=datetime.now(tz=timezone.utc),
+                published_date=datetime.now(tz=UTC),
                 url="https://example.com",
             )
 
@@ -189,7 +191,7 @@ class TestArticle:
                 title="Test",
                 summary="test",
                 source_name="test",
-                published_date=datetime.now(tz=timezone.utc),
+                published_date=datetime.now(tz=UTC),
                 url="",
             )
 
@@ -209,7 +211,7 @@ class TestAnalysisContext:
             title="Test Article",
             summary="Summary",
             source_name="TestSource",
-            published_date=datetime(2026, 3, 18, tzinfo=timezone.utc),
+            published_date=datetime(2026, 3, 18, tzinfo=UTC),
             url="https://example.com/test",
         )
 

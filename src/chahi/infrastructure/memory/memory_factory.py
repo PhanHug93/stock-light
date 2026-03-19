@@ -8,11 +8,14 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from chahi.core.entities import MemorySettings
-from chahi.core.interfaces import IMemoryManager
 from chahi.infrastructure.memory.file_memory_manager import FileMemoryManager
 from chahi.infrastructure.memory.mcp_memory_manager import MCPHttpMemoryManager
+
+if TYPE_CHECKING:
+    from chahi.core.entities import MemorySettings
+    from chahi.core.interfaces import IMemoryManager
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +41,5 @@ def create_memory_manager(settings: MemorySettings) -> IMemoryManager:
         return MCPHttpMemoryManager(settings=settings)
 
     raise ValueError(
-        f"Memory type không hỗ trợ: '{settings.type}'. "
-        f"Hỗ trợ: ['file', 'mcp']"
+        f"Memory type không hỗ trợ: '{settings.type}'. Hỗ trợ: ['file', 'mcp']"
     )

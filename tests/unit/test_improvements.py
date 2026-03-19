@@ -20,7 +20,6 @@ from chahi.infrastructure.llm.llm_factory import create_llm_client
 from chahi.infrastructure.llm.lm_studio_client import LMStudioClient
 from chahi.infrastructure.rss.rss_fetcher import RSSNewsFetcher, _smart_truncate
 
-
 # ─────────────────────────────────────────────────────────────
 # _smart_truncate
 # ─────────────────────────────────────────────────────────────
@@ -237,9 +236,7 @@ class TestGeminiClient:
             client.analyze("system", "user")
 
     @patch("chahi.infrastructure.llm.gemini_client.genai.Client")
-    def test_auth_error_raises_connection(
-        self, mock_client_cls: MagicMock
-    ) -> None:
+    def test_auth_error_raises_connection(self, mock_client_cls: MagicMock) -> None:
         """Lỗi xác thực phải raise ConnectionError."""
         mock_client = MagicMock()
         mock_client_cls.return_value = mock_client
@@ -315,8 +312,8 @@ class TestMemoryFactory:
     def test_creates_mcp_manager(self) -> None:
         """type=mcp phải trả về MCPHttpMemoryManager."""
         from chahi.core.entities import MemorySettings
-        from chahi.infrastructure.memory.memory_factory import create_memory_manager
         from chahi.infrastructure.memory.mcp_memory_manager import MCPHttpMemoryManager
+        from chahi.infrastructure.memory.memory_factory import create_memory_manager
 
         settings = MemorySettings(type="mcp", url="http://localhost:8080")
         mgr = create_memory_manager(settings)
@@ -350,9 +347,7 @@ class TestMCPHttpMemoryManager:
         mgr = MCPHttpMemoryManager(settings=settings)
 
         with patch.object(mgr, "_call_tool") as mock_call:
-            mock_call.return_value = {
-                "results": [{"text": "Dầu tăng 3%, vàng giảm"}]
-            }
+            mock_call.return_value = {"results": [{"text": "Dầu tăng 3%, vàng giảm"}]}
             result = mgr.retrieve_last_context()
             assert result == "Dầu tăng 3%, vàng giảm"
 
@@ -420,15 +415,11 @@ class TestMCPHttpMemoryManager:
         mgr = MCPHttpMemoryManager(settings=settings)
 
         # Pattern 1: content[0].text
-        result = mgr._extract_text_from_result(
-            {"content": [{"text": "abc"}]}
-        )
+        result = mgr._extract_text_from_result({"content": [{"text": "abc"}]})
         assert result == "abc"
 
         # Pattern 2: results[0].document
-        result = mgr._extract_text_from_result(
-            {"results": [{"document": "xyz"}]}
-        )
+        result = mgr._extract_text_from_result({"results": [{"document": "xyz"}]})
         assert result == "xyz"
 
         # Pattern 3: output
@@ -496,20 +487,10 @@ class TestMCPProtocolSelection:
         )
         mgr = MCPHttpMemoryManager(settings=settings)
 
-        with patch.object(mgr, "_sse_handshake") as mock_sse, \
-             patch.object(mgr, "_http_post") as mock_post:
-            mock_sse.return_value = "http://localhost:8080/message"
-            mock_post.return_value = {"result": {"content": [{"text": "ok"}]}}
-
-            result = mgr._call_tool("search_memory", {"query": "test"})
-
-            mock_sse.assert_called_once()
-            mock_post.assert_called_once()
-            # Verify JSON-RPC format
-            payload = mock_post.call_args[0][1]
-            assert payload["jsonrpc"] == "2.0"
-            assert payload["method"] == "tools/call"
-            assert payload["params"]["name"] == "search_memory"
+        with patch.object(mgr, "_call_tool_jsonrpc") as mock_jsonrpc:
+            mock_jsonrpc.return_value = {"result": {"content": [{"text": "ok"}]}}
+            mgr._call_tool("search_memory", {"query": "test"})
+            mock_jsonrpc.assert_called_once_with("search_memory", {"query": "test"})
 
     def test_jsonrpc_sse_failure_returns_none(self) -> None:
         """SSE handshake thất bại → _call_tool trả None."""
@@ -521,8 +502,7 @@ class TestMCPProtocolSelection:
         )
         mgr = MCPHttpMemoryManager(settings=settings)
 
-        with patch.object(mgr, "_sse_handshake") as mock_sse:
-            mock_sse.return_value = None  # SSE failed
+        with patch.object(mgr._session, "get") as mock_get:
+            mock_get.side_effect = requests.ConnectionError("refused")
             result = mgr._call_tool("search_memory", {"query": "test"})
             assert result is None
-

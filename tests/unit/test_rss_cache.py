@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
-import pytest
+from typing import TYPE_CHECKING
 
 from chahi.infrastructure.rss.rss_cache import RSSCache
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class TestRSSCache:

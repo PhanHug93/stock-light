@@ -221,46 +221,41 @@ def _get_latest_report(output_dir: Path) -> tuple[Path, str] | None:
 
 
 def _send_notifications(
-    config_path: Path,
+    config_reader: YamlConfigReader,
     report_content: str,
     channels: list[str] | None = None,
 ) -> None:
     """Gửi báo cáo tới các kênh thông báo đã enabled.
 
-    Đọc section ``notifications`` từ config, khởi tạo
+    Đọc notification settings từ IConfigReader, khởi tạo
     NotificationManager (Composite), và gửi report.
     Fail-safe: mọi exception đều được bắt và log.
 
     Args:
-        config_path: Đường dẫn tới file config YAML.
+        config_reader: Config reader đã khởi tạo.
         report_content: Nội dung báo cáo Markdown cần gửi.
         channels: Danh sách kênh cần gửi (["telegram"], ["discord"], hoặc
                   None = tất cả kênh đã enabled).
     """
     try:
-        if not config_path.exists():
-            logger.warning("Config file không tồn tại: %s", config_path)
-            return
-
-        with config_path.open("r", encoding="utf-8") as f:
-            full_config: dict[str, Any] = yaml.safe_load(f) or {}
-        notif_config: dict[str, Any] = full_config.get("notifications", {})
+        all_settings = config_reader.get_notification_settings()
 
         # Lọc kênh nếu có chỉ định
         if channels:
-            notif_config = {
-                k: v for k, v in notif_config.items() if k in channels
-            }
+            all_settings = [s for s in all_settings if s.type in channels]
             logger.info("Gửi chỉ qua: %s", ", ".join(channels))
 
-        manager = create_notification_manager(notif_config)
+        manager = create_notification_manager(all_settings)
 
         if manager.client_count > 0:
             now = datetime.now().strftime("%Y-%m-%d %H:%M")
             title = f"ChaHi Report {now}"
             success = manager.send_report(title, report_content)
             if success:
-                logger.info("✓ Đã gửi báo cáo qua %d kênh", manager.client_count)
+                logger.info(
+                    "✓ Đã gửi báo cáo qua %d kênh",
+                    manager.client_count,
+                )
             else:
                 logger.warning("✗ Có kênh gửi thất bại (xem log chi tiết)")
         else:
@@ -324,7 +319,8 @@ def main() -> None:
         report_path, report_content = result
         logger.info("Báo cáo mới nhất: %s", report_path)
 
-        _send_notifications(args.config, report_content, channels=channels)
+        config_reader = YamlConfigReader(config_path=args.config)
+        _send_notifications(config_reader, report_content, channels=channels)
         _print_preview(report_content)
         return
 
@@ -380,7 +376,7 @@ def main() -> None:
     logger.info("=" * 50)
 
     # ── 5. Gửi thông báo (Telegram / Discord) ──
-    _send_notifications(args.config, report_content, channels=channels)
+    _send_notifications(config_reader, report_content, channels=channels)
 
     # ── Print preview ──
     _print_preview(report_content)

@@ -6,14 +6,13 @@ Mock tất cả dependencies (IConfigReader, INewsFetcher, ILLMClient)
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from unittest.mock import MagicMock, call
+from datetime import UTC, datetime
+from unittest.mock import MagicMock
 
 import pytest
 
 from chahi.core.entities import (
     Article,
-    LLMSettings,
     SourceCategory,
     SourceConfig,
 )
@@ -23,7 +22,6 @@ from chahi.core.use_cases import (
     GenerateMacroReportUseCase,
     _extract_summary,
 )
-
 
 # ─────────────────────────────────────────────────────────────
 # Fixtures
@@ -39,7 +37,7 @@ def _make_article(
         title=title,
         summary="Summary of the article.",
         source_name=source,
-        published_date=datetime(2026, 3, 18, 10, 0, tzinfo=timezone.utc),
+        published_date=datetime(2026, 3, 18, 10, 0, tzinfo=UTC),
         url=f"https://example.com/{title.lower().replace(' ', '-')}",
     )
 
@@ -220,7 +218,7 @@ class TestExecuteEdgeCases:
             news_fetcher=partial_fetcher,
             llm_client=mock_llm,
         )
-        result = use_case.execute()
+        use_case.execute()
 
         # LLM vẫn được gọi vì có tin từ gold + crypto
         assert mock_llm.analyze.call_count >= 1
