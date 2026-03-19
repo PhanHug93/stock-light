@@ -13,13 +13,17 @@ Quy tắc:
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING
 
-from chahi.core.entities import (
-    Article,
-    LLMSettings,
-    SourceCategory,
-    SourceConfig,
-)
+if TYPE_CHECKING:
+    from chahi.core.entities import (
+        Article,
+        LLMSettings,
+        MemorySettings,
+        NotificationSettings,
+        SourceCategory,
+        SourceConfig,
+    )
 
 
 class IConfigReader(ABC):
@@ -52,6 +56,30 @@ class IConfigReader(ABC):
         Raises:
             FileNotFoundError: Khi nguồn cấu hình không tồn tại.
             ValueError: Khi cấu hình LLM không hợp lệ.
+        """
+
+    @abstractmethod
+    def get_memory_settings(self) -> MemorySettings:
+        """Lấy cấu hình Memory Manager.
+
+        Returns:
+            MemorySettings đã validate.
+
+        Raises:
+            FileNotFoundError: Khi nguồn cấu hình không tồn tại.
+            ValueError: Khi cấu hình không hợp lệ.
+        """
+
+    @abstractmethod
+    def get_notification_settings(self) -> list[NotificationSettings]:
+        """Lấy cấu hình thông báo (Telegram, Discord, ...).
+
+        Returns:
+            Danh sách NotificationSettings cho các kênh đã cấu hình.
+            Trả về list rỗng nếu không có kênh nào.
+
+        Raises:
+            FileNotFoundError: Khi nguồn cấu hình không tồn tại.
         """
 
 
