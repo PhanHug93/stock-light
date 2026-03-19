@@ -14,7 +14,6 @@ import pytest
 from chahi.core.entities import LLMSettings
 from chahi.infrastructure.llm.lm_studio_client import LMStudioClient
 
-
 # ─────────────────────────────────────────────────────────────
 # Fixtures
 # ─────────────────────────────────────────────────────────────
@@ -127,7 +126,7 @@ class TestLMStudioClientAnalyze:
     def test_constructor_passes_settings_with_timeout(
         self, mock_openai_cls: MagicMock, settings: LLMSettings
     ) -> None:
-        """Constructor phải truyền đúng base_url, api_key, và timeout tới OpenAI client."""
+        """Constructor phải truyền đúng base_url, api_key, timeout."""
         LMStudioClient(settings=settings)
 
         mock_openai_cls.assert_called_once_with(
@@ -140,8 +139,15 @@ class TestLMStudioClientAnalyze:
     def test_custom_timeout(
         self, mock_openai_cls: MagicMock, settings: LLMSettings
     ) -> None:
-        """Constructor phải hỗ trợ custom timeout."""
-        LMStudioClient(settings=settings, timeout=30)
+        """Constructor phải hỗ trợ custom timeout từ settings."""
+        custom_settings = LLMSettings(
+            api_base="http://localhost:1234/v1",
+            api_key="lm-studio",
+            model_name="test-model",
+            temperature=0.1,
+            timeout=30,
+        )
+        LMStudioClient(settings=custom_settings)
 
         mock_openai_cls.assert_called_once_with(
             base_url="http://localhost:1234/v1",
@@ -165,8 +171,8 @@ class TestLMStudioClientErrors:
         """APIConnectionError phải raise ConnectionError với thông báo tiếng Việt."""
         mock_client = MagicMock()
         mock_openai_cls.return_value = mock_client
-        mock_client.chat.completions.create.side_effect = (
-            openai.APIConnectionError(request=MagicMock())
+        mock_client.chat.completions.create.side_effect = openai.APIConnectionError(
+            request=MagicMock()
         )
 
         client = LMStudioClient(settings=settings)
@@ -229,8 +235,8 @@ class TestLMStudioClientErrors:
         """APITimeoutError phải raise RuntimeError với message timeout."""
         mock_client = MagicMock()
         mock_openai_cls.return_value = mock_client
-        mock_client.chat.completions.create.side_effect = (
-            openai.APITimeoutError(request=MagicMock())
+        mock_client.chat.completions.create.side_effect = openai.APITimeoutError(
+            request=MagicMock()
         )
 
         client = LMStudioClient(settings=settings)
@@ -248,12 +254,10 @@ class TestLMStudioClientErrors:
         mock_response = MagicMock()
         mock_response.status_code = 429
         mock_response.json.return_value = {"error": {"message": "rate limited"}}
-        mock_client.chat.completions.create.side_effect = (
-            openai.RateLimitError(
-                message="rate limited",
-                response=mock_response,
-                body={"error": {"message": "rate limited"}},
-            )
+        mock_client.chat.completions.create.side_effect = openai.RateLimitError(
+            message="rate limited",
+            response=mock_response,
+            body={"error": {"message": "rate limited"}},
         )
 
         client = LMStudioClient(settings=settings)
@@ -271,12 +275,10 @@ class TestLMStudioClientErrors:
         mock_response = MagicMock()
         mock_response.status_code = 500
         mock_response.json.return_value = {"error": {"message": "internal error"}}
-        mock_client.chat.completions.create.side_effect = (
-            openai.InternalServerError(
-                message="internal error",
-                response=mock_response,
-                body={"error": {"message": "internal error"}},
-            )
+        mock_client.chat.completions.create.side_effect = openai.InternalServerError(
+            message="internal error",
+            response=mock_response,
+            body={"error": {"message": "internal error"}},
         )
 
         client = LMStudioClient(settings=settings)

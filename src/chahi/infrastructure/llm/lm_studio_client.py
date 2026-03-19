@@ -7,11 +7,14 @@ Sử dụng thư viện ``openai`` Python chính thức, chỉ cần override ``
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 import openai
 
-from chahi.core.entities import LLMSettings
 from chahi.core.interfaces import ILLMClient
+
+if TYPE_CHECKING:
+    from chahi.core.entities import LLMSettings
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +68,8 @@ class LMStudioClient(ILLMClient):
             RuntimeError: Khi response từ LLM rỗng hoặc không hợp lệ.
         """
         logger.info(
-            "Gửi request tới LLM: model=%s, system_prompt=%d chars, user_content=%d chars",
+            "Gửi request tới LLM: model=%s, "
+            "system_prompt=%d chars, user_content=%d chars",
             self._settings.model_name,
             len(system_prompt),
             len(user_content),

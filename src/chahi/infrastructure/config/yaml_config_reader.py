@@ -7,8 +7,7 @@ Xử lý triệt để exception: file missing, YAML syntax error, missing field
 from __future__ import annotations
 
 import logging
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
 
@@ -20,6 +19,9 @@ from chahi.core.entities import (
     SourceConfig,
 )
 from chahi.core.interfaces import IConfigReader
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -110,9 +112,7 @@ class YamlConfigReader(IConfigReader):
         )
 
         masked_key = (
-            settings.api_key[:3] + "****"
-            if len(settings.api_key) > 3
-            else "****"
+            settings.api_key[:3] + "****" if len(settings.api_key) > 3 else "****"
         )
         logger.info(
             "LLM settings: provider=%s, base=%s, model=%s, key=%s, temp=%.1f",
@@ -224,9 +224,7 @@ class YamlConfigReader(IConfigReader):
             return self._raw
 
         if not self._config_path.exists():
-            raise FileNotFoundError(
-                f"Config file không tồn tại: {self._config_path}"
-            )
+            raise FileNotFoundError(f"Config file không tồn tại: {self._config_path}")
 
         logger.info("Đọc config từ: %s", self._config_path)
 
@@ -240,8 +238,7 @@ class YamlConfigReader(IConfigReader):
 
         if not isinstance(raw, dict):
             raise ValueError(
-                f"Config file phải là YAML dictionary, "
-                f"nhận được: {type(raw).__name__}"
+                f"Config file phải là YAML dictionary, nhận được: {type(raw).__name__}"
             )
 
         self._raw = raw
@@ -265,8 +262,7 @@ class YamlConfigReader(IConfigReader):
         except ValueError:
             valid = [c.value for c in SourceCategory]
             raise ValueError(
-                f"Category '{key}' không hợp lệ. "
-                f"Các giá trị hợp lệ: {valid}"
+                f"Category '{key}' không hợp lệ. Các giá trị hợp lệ: {valid}"
             ) from None
 
     @staticmethod
@@ -288,8 +284,7 @@ class YamlConfigReader(IConfigReader):
         """
         if not isinstance(feeds_list, list) or not feeds_list:
             raise ValueError(
-                f"Category '{category_key}' phải chứa list sources, "
-                f"không được rỗng."
+                f"Category '{category_key}' phải chứa list sources, không được rỗng."
             )
 
         result: list[SourceConfig] = []
@@ -306,13 +301,9 @@ class YamlConfigReader(IConfigReader):
             source_type = item.get("type", "rss")
 
             if not name:
-                raise ValueError(
-                    f"Source #{idx} trong '{category_key}': thiếu 'name'."
-                )
+                raise ValueError(f"Source #{idx} trong '{category_key}': thiếu 'name'.")
             if not url:
-                raise ValueError(
-                    f"Source #{idx} trong '{category_key}': thiếu 'url'."
-                )
+                raise ValueError(f"Source #{idx} trong '{category_key}': thiếu 'url'.")
 
             result.append(
                 SourceConfig(name=str(name), url=str(url), type=str(source_type))

@@ -7,12 +7,15 @@ Hỗ trợ cả Gemini 2.0 Flash và các model khác.
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 from google import genai
 from google.genai import types
 
-from chahi.core.entities import LLMSettings
 from chahi.core.interfaces import ILLMClient
+
+if TYPE_CHECKING:
+    from chahi.core.entities import LLMSettings
 
 logger = logging.getLogger(__name__)
 

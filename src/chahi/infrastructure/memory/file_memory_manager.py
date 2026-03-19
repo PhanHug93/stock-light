@@ -9,7 +9,7 @@ Dùng làm fallback khi chưa cắm MCP server thật.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from chahi.core.interfaces import IMemoryManager
@@ -69,7 +69,7 @@ class FileMemoryManager(IMemoryManager):
         try:
             self._memory_dir.mkdir(parents=True, exist_ok=True)
 
-            timestamp = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+            timestamp = datetime.now(tz=UTC).strftime("%Y-%m-%d %H:%M UTC")
             header = f"<!-- Saved: {timestamp} -->\n\n"
             full_content = header + context_data
 

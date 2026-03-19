@@ -7,12 +7,14 @@ Tự động chia nhỏ message dài (Telegram limit: 4096 chars).
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import requests
 
-from chahi.core.entities import NotificationSettings
 from chahi.core.interfaces import INotifier
+
+if TYPE_CHECKING:
+    from chahi.core.entities import NotificationSettings
 
 logger = logging.getLogger(__name__)
 

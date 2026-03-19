@@ -222,9 +222,7 @@ class GenerateMacroReportUseCase:
             try:
                 previous_context = self._memory.retrieve_last_context()
                 if previous_context:
-                    logger.info(
-                        "  → Có nhận định cũ: %d chars", len(previous_context)
-                    )
+                    logger.info("  → Có nhận định cũ: %d chars", len(previous_context))
                 else:
                     logger.info("  → Chưa có nhận định cũ (lần đầu chạy).")
             except Exception as exc:
@@ -262,9 +260,7 @@ class GenerateMacroReportUseCase:
 
         # ── Bước 5: REDUCE — Tổng hợp & Bản địa hóa ──
         logger.info("Bước 5/7: REDUCE — Tổng hợp & Bản địa hóa VN...")
-        reduce_input = self._format_reduce_input(
-            category_summaries, previous_context
-        )
+        reduce_input = self._format_reduce_input(category_summaries, previous_context)
         report = self._llm_client.analyze(
             system_prompt=REDUCE_PROMPT,
             user_content=reduce_input,
@@ -290,9 +286,7 @@ class GenerateMacroReportUseCase:
 
     _MAX_MAP_WORKERS: int = 3  # 3 nhóm tài sản song song
 
-    def _analyze_category(
-        self, category_name: str, articles: list[Article]
-    ) -> str:
+    def _analyze_category(self, category_name: str, articles: list[Article]) -> str:
         """MAP: Phân tích cục bộ 1 nhóm tài sản.
 
         Gửi danh sách articles cùng MAP_PROMPT tới LLM
@@ -327,19 +321,13 @@ class GenerateMacroReportUseCase:
                 system_prompt=system_prompt,
                 user_content=user_content,
             )
-            logger.info(
-                "  MAP [%s] → %d chars tóm tắt", category_name, len(result)
-            )
+            logger.info("  MAP [%s] → %d chars tóm tắt", category_name, len(result))
             return result
         except Exception as exc:
-            logger.warning(
-                "  MAP [%s] thất bại: %s", category_name, exc
-            )
+            logger.warning("  MAP [%s] thất bại: %s", category_name, exc)
             return ""
 
-    def _map_analyze_all(
-        self, context: AnalysisContext
-    ) -> dict[str, str]:
+    def _map_analyze_all(self, context: AnalysisContext) -> dict[str, str]:
         """Chạy MAP song song cho cả 3 nhóm tài sản.
 
         Args:
@@ -358,9 +346,7 @@ class GenerateMacroReportUseCase:
 
         with ThreadPoolExecutor(max_workers=self._MAX_MAP_WORKERS) as pool:
             future_map = {
-                pool.submit(
-                    self._analyze_category, name, articles
-                ): name
+                pool.submit(self._analyze_category, name, articles): name
                 for name, articles in tasks
             }
 
@@ -430,8 +416,7 @@ class GenerateMacroReportUseCase:
                 _MAX_CONTEXT_CHARS,
             )
             result = (
-                result[:_MAX_CONTEXT_CHARS]
-                + "\n\n⚠️ (Đã cắt bớt do giới hạn token)"
+                result[:_MAX_CONTEXT_CHARS] + "\n\n⚠️ (Đã cắt bớt do giới hạn token)"
             )
 
         return result

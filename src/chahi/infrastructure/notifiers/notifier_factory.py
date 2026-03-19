@@ -50,9 +50,7 @@ def create_notifiers(
                 notifiers.append(DiscordNotifier(setting))
                 logger.info("✓ Discord notifier enabled")
             else:
-                logger.warning(
-                    "Notifier type không hỗ trợ: %s", setting.type
-                )
+                logger.warning("Notifier type không hỗ trợ: %s", setting.type)
         except ValueError as exc:
             logger.warning("%s config lỗi: %s", setting.type, exc)
 

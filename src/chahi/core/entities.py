@@ -12,10 +12,12 @@ Quy tắc:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime
 from enum import Enum, unique
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
+if TYPE_CHECKING:
+    from datetime import date, datetime
 
 # ═════════════════════════════════════════════════════════════
 # Enums
@@ -178,9 +180,7 @@ class MemorySettings:
                 f"Hỗ trợ: {list(self._VALID_TYPES)}"
             )
         if self.type == "mcp" and not self.url.strip():
-            raise ValueError(
-                "MemorySettings.url không được để trống khi type='mcp'."
-            )
+            raise ValueError("MemorySettings.url không được để trống khi type='mcp'.")
         if self.type == "mcp" and self.protocol not in self._VALID_PROTOCOLS:
             raise ValueError(
                 f"MemorySettings.protocol không hợp lệ: '{self.protocol}'. "
@@ -225,14 +225,9 @@ class NotificationSettings:
                     "NotificationSettings: bot_token bắt buộc cho Telegram."
                 )
             if not self.chat_id.strip():
-                raise ValueError(
-                    "NotificationSettings: chat_id bắt buộc cho Telegram."
-                )
-        if self.enabled and self.type == "discord":
-            if not self.webhook_url.strip():
-                raise ValueError(
-                    "NotificationSettings: webhook_url bắt buộc cho Discord."
-                )
+                raise ValueError("NotificationSettings: chat_id bắt buộc cho Telegram.")
+        if self.enabled and self.type == "discord" and not self.webhook_url.strip():
+            raise ValueError("NotificationSettings: webhook_url bắt buộc cho Discord.")
 
 
 # ═════════════════════════════════════════════════════════════

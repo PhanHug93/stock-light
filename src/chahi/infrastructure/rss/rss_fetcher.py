@@ -15,7 +15,7 @@ from __future__ import annotations
 import calendar
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Any
 
@@ -130,7 +130,9 @@ class RSSNewsFetcher(INewsFetcher):
         Raises:
             ConnectionError: Khi không thể kết nối hoặc HTTP error.
         """
-        logger.info("Fetching RSS: %s (limit=%d, timeout=%ds)", url, limit, self._timeout)
+        logger.info(
+            "Fetching RSS: %s (limit=%d, timeout=%ds)", url, limit, self._timeout
+        )
 
         # ── Bước 1: HTTP request với timeout + retry ──
         raw_content = self._http_get(url)
@@ -327,7 +329,7 @@ class RSSNewsFetcher(INewsFetcher):
         if parsed is not None:
             try:
                 timestamp = calendar.timegm(parsed)
-                return datetime.fromtimestamp(timestamp, tz=timezone.utc)
+                return datetime.fromtimestamp(timestamp, tz=UTC)
             except (TypeError, ValueError, OverflowError):
                 pass
 
@@ -343,9 +345,9 @@ class RSSNewsFetcher(INewsFetcher):
         if updated is not None:
             try:
                 timestamp = calendar.timegm(updated)
-                return datetime.fromtimestamp(timestamp, tz=timezone.utc)
+                return datetime.fromtimestamp(timestamp, tz=UTC)
             except (TypeError, ValueError, OverflowError):
                 pass
 
         logger.debug("Không parse được date, dùng UTC now.")
-        return datetime.now(tz=timezone.utc)
+        return datetime.now(tz=UTC)

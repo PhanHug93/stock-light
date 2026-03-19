@@ -242,9 +242,7 @@ def _send_notifications(
 
         # Lọc kênh nếu có chỉ định
         if channels:
-            all_settings = [
-                s for s in all_settings if s.type in channels
-            ]
+            all_settings = [s for s in all_settings if s.type in channels]
             logger.info("Gửi chỉ qua: %s", ", ".join(channels))
 
         manager = create_notification_manager(all_settings)
@@ -259,9 +257,7 @@ def _send_notifications(
                     manager.client_count,
                 )
             else:
-                logger.warning(
-                    "✗ Có kênh gửi thất bại (xem log chi tiết)"
-                )
+                logger.warning("✗ Có kênh gửi thất bại (xem log chi tiết)")
         else:
             logger.info("Không có kênh thông báo nào được bật.")
     except Exception as exc:  # noqa: BLE001
@@ -317,18 +313,14 @@ def main() -> None:
 
         result = _get_latest_report(validated_dir)
         if result is None:
-            logger.error(
-                "✗ Không tìm thấy báo cáo nào trong: %s", validated_dir
-            )
+            logger.error("✗ Không tìm thấy báo cáo nào trong: %s", validated_dir)
             sys.exit(1)
 
         report_path, report_content = result
         logger.info("Báo cáo mới nhất: %s", report_path)
 
         config_reader = YamlConfigReader(config_path=args.config)
-        _send_notifications(
-            config_reader, report_content, channels=channels
-        )
+        _send_notifications(config_reader, report_content, channels=channels)
         _print_preview(report_content)
         return
 
@@ -384,9 +376,7 @@ def main() -> None:
     logger.info("=" * 50)
 
     # ── 5. Gửi thông báo (Telegram / Discord) ──
-    _send_notifications(
-        config_reader, report_content, channels=channels
-    )
+    _send_notifications(config_reader, report_content, channels=channels)
 
     # ── Print preview ──
     _print_preview(report_content)

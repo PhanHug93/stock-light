@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from textwrap import dedent
+from typing import TYPE_CHECKING
 
 import pytest
+import yaml
 
 from chahi.core.entities import LLMSettings, SourceCategory, SourceConfig
 from chahi.infrastructure.config.yaml_config_reader import YamlConfigReader
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # ─────────────────────────────────────────────────────────────
 # Test Config Strings
@@ -212,7 +216,7 @@ class TestGetSourcesErrors:
         """YAML lỗi cú pháp phải raise exception."""
         config = _write_config(tmp_path, _BAD_YAML)
         reader = YamlConfigReader(config_path=config)
-        with pytest.raises(Exception):
+        with pytest.raises((ValueError, yaml.YAMLError)):
             reader.get_sources()
 
     def test_yaml_not_dict(self, tmp_path: Path) -> None:
