@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date, datetime, timezone
+from datetime import date
 
 from chahi.core.entities import AnalysisContext, Article, SourceCategory, SourceConfig
 from chahi.core.interfaces import (
@@ -56,9 +56,10 @@ của nhóm **{category_name}** dưới đây và viết BẢN TÓM TẮT gồm 
 # ═════════════════════════════════════════════════════════════
 
 REDUCE_PROMPT: str = """\
-Bạn là Chuyên gia Kinh tế Vĩ mô hàng đầu với hơn 20 năm kinh nghiệm \
-phân tích thị trường tài chính toàn cầu, đặc biệt am hiểu sâu sắc về \
-Thị trường Chứng khoán Việt Nam (VN-Index) và nhóm cổ phiếu Ngân hàng.
+Bạn là Giám đốc Đầu tư (CIO) hàng đầu Việt Nam với hơn 20 năm kinh nghiệm \
+điều phối danh mục tài sản lớn, đặc biệt am hiểu sâu sắc về VN-Index và \
+nhóm cổ phiếu Ngân hàng. Bạn có tư duy quân sự: kỷ luật, tàn nhẫn khi sai, \
+và luôn ghi nhật ký chiến trận để không bao giờ lặp lại sai lầm.
 
 **NHIỆM VỤ**: Bạn nhận được 3 bản tóm tắt phân tích từ 3 nhóm tài sản \
 (Dầu & Vĩ mô, Vàng, Crypto). Hãy TỔNG HỢP và SUY LUẬN TÁC ĐỘNG CHÉO \
@@ -111,15 +112,42 @@ tỷ giá USD/VND, lãi suất, tăng trưởng tín dụng, nợ xấu.
 - Dự báo hướng đi cho ngày/tuần tiếp theo.
 - Spotlight: nhóm ngân hàng — mua/giữ/bán?
 
+## 7. 🧠 Sổ Tay Kinh Nghiệm
+**BẮT BUỘC** — Đây là mục QUAN TRỌNG NHẤT cho sự tiến bộ của bạn.
+
+Đọc kỹ phần [NHÌN LẠI QUÁ KHỨ] (nhật ký dự báo & bài học từ phiên trước \
+của chính bạn). Đối chiếu với tin tức thực tế hôm nay và thực hiện:
+
+- **Nếu dự báo SAI**: Tàn nhẫn tự kiểm điểm. Yếu tố nào bạn đã bỏ qua? \
+Dòng tiền đã bẻ lái vì tin tức nào? Đúc kết thành 1 QUY TẮC PHÂN TÍCH MỚI \
+(ví dụ: "Bài học: Khi có tin chiến tranh leo thang, bỏ qua yếu tố lạm phát — \
+dòng tiền sẽ ưu tiên trú ẩn vào Vàng trước khi quay lại cổ phiếu").
+- **Nếu dự báo ĐÚNG**: Ghi nhận yếu tố cốt lõi nào đã giúp dự báo chuẩn xác. \
+Viết thành 1 QUY TẮC ĐỂ PHÁT HUY \
+(ví dụ: "Kinh nghiệm: Khi DXY giảm liên tiếp 3 phiên + CPI hạ nhiệt → \
+Vàng và Crypto đồng loạt tăng, VN-Index hưởng lợi qua nhóm xuất khẩu").
+- **Nếu chưa có dữ liệu quá khứ** (lần đầu chạy): Ghi nhận 2-3 rủi ro/catalyst \
+cần theo dõi cho phiên tiếp theo.
+
+Format mỗi bài học:
+> 📝 **Bài học #{số}**: [Mô tả ngắn gọn quy tắc]
+> - Bối cảnh: [Tình huống dẫn tới bài học]
+> - Quy tắc: [Quy tắc phân tích rút ra]
+
 **QUY TẮC**:
 - Suy luận dựa trên DỮ LIỆU thực tế, không suy đoán vô căn cứ.
-- Ngôn ngữ chuyên nghiệp, súc tích, đi thẳng vào trọng tâm.
+- Ngôn ngữ chuyên nghiệp, súc tích, Giám đốc Đầu tư viết cho team.
 - Trả lời hoàn toàn bằng tiếng Việt.
 - Markdown chuẩn: heading, bullet points, bold/italic.
 - **TUYỆT ĐỐI** bắt đầu phần tổng kết bằng chính xác dòng: `## 6. 📋 Tổng kết`
+- **TUYỆT ĐỐI** bắt đầu phần kinh nghiệm bằng chính xác dòng: \
+`## 7. 🧠 Sổ Tay Kinh Nghiệm`
 """
 
-# ── Regex trích xuất Tổng kết (linh hoạt nhiều format LLM) ──
+# ── Regex trích xuất Tổng kết + Sổ Tay Kinh Nghiệm ──
+# Bắt từ "## Tổng kết" → lấy TOÀN BỘ nội dung đến hết file.
+# Nội dung trả về sẽ chứa CẢ mục 6 (Tổng kết) VÀ mục 7 (Sổ Tay Kinh Nghiệm)
+# để gửi nguyên khối vào IMemoryManager → phiên sau LLM đọc lại.
 _SUMMARY_RE = re.compile(
     r"##\s*(?:\d+\.?\s*)?(?:📋\s*)?[Tt]ổng\s*[Kk]ết.*?\n(.*)",
     re.DOTALL,
@@ -364,10 +392,13 @@ class GenerateMacroReportUseCase:
         today = date.today().strftime("%d/%m/%Y")
         sections: list[str] = [f"📅 Ngày phân tích: {today}\n"]
 
-        # ── Previous Context (Feedback Loop) ──
+        # ── Previous Context (Nhật ký Self-Reflection) ──
         if previous_context:
             sections.append("=" * 50)
-            sections.append("🔄 [NHÌN LẠI QUÁ KHỨ] — Nhận định phiên trước:")
+            sections.append(
+                "🔄 [NHÌN LẠI QUÁ KHỨ] — Nhật ký dự báo"
+                " & Bài học của bạn từ phiên trước:"
+            )
             sections.append("=" * 50)
             sections.append(previous_context)
             sections.append("")
@@ -394,7 +425,10 @@ class GenerateMacroReportUseCase:
                 len(result),
                 _MAX_CONTEXT_CHARS,
             )
-            result = result[:_MAX_CONTEXT_CHARS] + "\n\n⚠️ (Đã cắt bớt do giới hạn token)"
+            result = (
+                result[:_MAX_CONTEXT_CHARS]
+                + "\n\n⚠️ (Đã cắt bớt do giới hạn token)"
+            )
 
         return result
 
@@ -481,16 +515,20 @@ class GenerateMacroReportUseCase:
 
 
 def _extract_summary(report: str) -> str:
-    """Trích xuất phần Tổng kết từ báo cáo Markdown.
+    """Trích xuất phần Tổng kết + Sổ Tay Kinh Nghiệm từ báo cáo.
 
-    Tìm section "## Tổng kết" và lấy toàn bộ nội dung phía sau.
+    Tìm section ``## 6. 📋 Tổng kết`` và lấy TOÀN BỘ nội dung phía sau,
+    bao gồm cả ``## 7. 🧠 Sổ Tay Kinh Nghiệm``. Khối này được gửi
+    nguyên vẹn vào ``IMemoryManager`` để phiên sau LLM đọc lại và
+    tự đối chiếu (Self-Reflection).
+
     Nếu không tìm được, lưu 500 ký tự cuối cùng của report.
 
     Args:
         report: Nội dung báo cáo Markdown đầy đủ.
 
     Returns:
-        Phần tổng kết đã trích xuất.
+        Phần tổng kết + kinh nghiệm đã trích xuất.
     """
     match = _SUMMARY_RE.search(report)
     if match:
