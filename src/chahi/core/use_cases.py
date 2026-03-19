@@ -23,14 +23,18 @@ import logging
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
+from typing import TYPE_CHECKING
 
-from chahi.core.entities import AnalysisContext, Article, SourceCategory, SourceConfig
-from chahi.core.interfaces import (
-    IConfigReader,
-    ILLMClient,
-    IMemoryManager,
-    INewsFetcher,
-)
+from chahi.core.entities import AnalysisContext, SourceCategory
+
+if TYPE_CHECKING:
+    from chahi.core.entities import Article, SourceConfig
+    from chahi.core.interfaces import (
+        IConfigReader,
+        ILLMClient,
+        IMemoryManager,
+        INewsFetcher,
+    )
 
 logger = logging.getLogger(__name__)
 

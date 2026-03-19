@@ -27,7 +27,7 @@ dev = [
 ]
 
 [project.scripts]
-chahi = "chahi.cli:main"
+chahi = "main:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
