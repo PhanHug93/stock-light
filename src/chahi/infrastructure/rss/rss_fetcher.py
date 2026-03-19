@@ -8,6 +8,7 @@ Bảo mật & chịu tải:
     - User-Agent header để tránh bị RSS servers block.
     - HTML cleaning bằng BeautifulSoup4 (an toàn, xử lý nested/malformed HTML).
     - Smart truncation tại word boundary tránh LLM token overflow.
+    - Deep Scraper: Tự động bóc tách full-text khi RSS summary quá ngắn.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from typing import Any
 
 import feedparser  # type: ignore[import-untyped]
 import requests
+import trafilatura
 from bs4 import BeautifulSoup
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -37,7 +39,8 @@ _WHITESPACE_RE = re.compile(r"\s+")
 
 _REQUEST_TIMEOUT: int = 15  # seconds mỗi request
 _MAX_SUMMARY_CHARS: int = 5000  # Phase 7: không cần chắt bóp token
-_USER_AGENT: str = "ChaHi/0.1.0 RSS Fetcher (+https://github.com/chahi)"
+_MIN_SUMMARY_THRESHOLD: int = 500  # Phase 10: ngưỡng kích hoạt Deep Scraper
+_USER_AGENT: str = "ChaHi/0.3.0 RSS Fetcher (+https://github.com/chahi)"
 _MAX_RETRIES: int = 2  # retry cho 5xx errors
 
 
@@ -100,6 +103,7 @@ class RSSNewsFetcher(INewsFetcher):
     2. Parse response bằng feedparser.
     3. Map từng entry sang domain entity ``Article``.
     4. Clean HTML bằng BeautifulSoup4 và smart truncate summary.
+    5. Deep Scraper: Bóc tách full-text khi RSS summary quá ngắn.
 
     Args:
         source_name: Tên nguồn tin mặc định.
@@ -232,10 +236,70 @@ class RSSNewsFetcher(INewsFetcher):
 
         return response.content
 
+    # ── Private: Deep Scraper (Full-text Extraction) ────────
+
+    def _fetch_full_text(self, url: str) -> str | None:
+        """Bóc tách full-text từ URL gốc bằng trafilatura.
+
+        Khi RSS summary quá ngắn (Teaser Feed), hàm này truy cập
+        trực tiếp URL bài báo và extract nội dung chính.
+
+        Defensive Programming:
+        - Bắt mọi exception HTTP (Timeout, 403, ConnectionError).
+        - Trả về None nếu lỗi → pipeline vẫn dùng RSS summary cũ.
+        - Không làm crash toàn bộ mẻ cào tin.
+
+        Args:
+            url: URL gốc của bài báo.
+
+        Returns:
+            Full-text đã extract, hoặc None nếu thất bại.
+        """
+        try:
+            response = self._session.get(url, timeout=self._timeout)
+            response.raise_for_status()
+        except requests.Timeout:
+            logger.warning("  Deep Scraper timeout sau %ds: %s", self._timeout, url)
+            return None
+        except requests.ConnectionError:
+            logger.warning("  Deep Scraper không kết nối được: %s", url)
+            return None
+        except requests.HTTPError as exc:
+            logger.warning(
+                "  Deep Scraper bị chặn (HTTP %s): %s",
+                exc.response.status_code if exc.response else "?",
+                url,
+            )
+            return None
+        except requests.RequestException as exc:
+            logger.warning("  Deep Scraper lỗi không xác định: %s — %s", url, exc)
+            return None
+
+        # Extract nội dung chính bằng trafilatura
+        try:
+            text = trafilatura.extract(response.text)
+        except Exception:  # noqa: BLE001
+            logger.warning("  trafilatura extract thất bại: %s", url)
+            return None
+
+        if not text or not text.strip():
+            logger.debug("  trafilatura trả về empty cho: %s", url)
+            return None
+
+        logger.info(
+            "  ✅ Deep Scraper: extracted %d chars từ %s",
+            len(text),
+            url,
+        )
+        return text.strip()
+
     # ── Private: Entry Parsing ──────────────────────────────
 
     def _parse_entry(self, entry: Any) -> Article | None:
         """Parse một RSS entry thành Article.
+
+        Nếu RSS summary quá ngắn (< 500 ký tự), tự động kích hoạt
+        Deep Scraper để bóc tách full-text từ URL gốc.
 
         Trả về None nếu entry thiếu title hoặc link.
 
@@ -258,6 +322,19 @@ class RSSNewsFetcher(INewsFetcher):
 
         summary_raw = entry.get("summary", "") or entry.get("description", "") or ""
         summary = self._clean_html(summary_raw)
+
+        # ── Phase 10: Deep Scraper ──
+        # Nếu RSS summary quá ngắn → bóc tách full-text từ URL gốc
+        if len(summary) < _MIN_SUMMARY_THRESHOLD:
+            logger.info(
+                "  Teaser detected (%d chars < %d): %s",
+                len(summary),
+                _MIN_SUMMARY_THRESHOLD,
+                title[:60],
+            )
+            full_text = self._fetch_full_text(link)
+            if full_text:
+                summary = full_text
 
         # Smart truncate: cắt tại word boundary, không cắt ngang từ
         summary = _smart_truncate(summary, _MAX_SUMMARY_CHARS)
