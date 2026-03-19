@@ -2,11 +2,16 @@
 
 Sử dụng HTTP POST tới ``api.telegram.org`` (không cần thư viện ngoài).
 Tự động chia nhỏ message dài (Telegram limit: 4096 chars).
+
+Markdown-aware splitting:
+    Khi cắt message, tự động đóng/mở lại các Markdown format markers
+    (bold, italic, code) để tránh Telegram HTTP 400 lỗi unclosed entities.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 from typing import TYPE_CHECKING, Any
 
 import requests
@@ -20,6 +25,9 @@ logger = logging.getLogger(__name__)
 
 _TELEGRAM_API = "https://api.telegram.org/bot{token}/sendMessage"
 _MAX_MESSAGE_LENGTH: int = 4096  # Telegram limit
+
+# Markdown format markers cần track (thứ tự ưu tiên dài → ngắn)
+_MARKDOWN_MARKERS = ("```", "**", "__", "*", "_", "`")
 
 
 class TelegramNotifier(INotifier):
@@ -108,10 +116,35 @@ class TelegramNotifier(INotifier):
             return False
 
     @staticmethod
-    def _split_message(text: str) -> list[str]:
-        """Chia message dài thành các phần ≤ 4096 chars.
+    def _count_marker_occurrences(text: str, marker: str) -> int:
+        """Đếm số lần marker xuất hiện (không overlap)."""
+        if marker == "```":
+            return len(re.findall(r"```", text))
+        return text.count(marker)
 
-        Ưu tiên cắt tại ``\\n\\n`` (paragraph break), fallback ``\\n``.
+    @staticmethod
+    def _get_unclosed_markers(text: str) -> list[str]:
+        """Tìm các Markdown markers đang mở (chưa đóng) trong text.
+
+        Marker xuất hiện số lẻ lần = đang mở.
+        Trả về theo thứ tự: dài nhất trước (``` trước *).
+        """
+        unclosed: list[str] = []
+        for marker in _MARKDOWN_MARKERS:
+            count = TelegramNotifier._count_marker_occurrences(text, marker)
+            if count % 2 == 1:
+                unclosed.append(marker)
+        return unclosed
+
+    @staticmethod
+    def _split_message(text: str) -> list[str]:
+        """Chia message dài thành các phần ≤ 4096 chars (Markdown-aware).
+
+        1. Tìm điểm cắt tốt nhất (paragraph > line > sentence).
+        2. Kiểm tra Markdown markers chưa đóng ở chunk hiện tại.
+        3. Đóng markers ở cuối chunk, mở lại ở đầu chunk tiếp theo.
+
+        Đảm bảo mỗi chunk là Markdown hợp lệ → tránh Telegram HTTP 400.
         """
         if len(text) <= _MAX_MESSAGE_LENGTH:
             return [text]
@@ -124,7 +157,7 @@ class TelegramNotifier(INotifier):
                 chunks.append(remaining)
                 break
 
-            # Tìm điểm cắt tốt nhất
+            # ── Tìm điểm cắt tốt nhất ──
             cut_at = _MAX_MESSAGE_LENGTH
             for sep in ("\n\n", "\n", ". "):
                 idx = remaining.rfind(sep, 0, _MAX_MESSAGE_LENGTH)
@@ -132,7 +165,21 @@ class TelegramNotifier(INotifier):
                     cut_at = idx + len(sep)
                     break
 
-            chunks.append(remaining[:cut_at])
+            chunk = remaining[:cut_at]
             remaining = remaining[cut_at:]
+
+            # ── Markdown-aware: đóng/mở markers ──
+            unclosed = TelegramNotifier._get_unclosed_markers(chunk)
+
+            if unclosed:
+                # Đóng markers ở cuối chunk (thứ tự ngược)
+                closing = "".join(reversed(unclosed))
+                chunk = chunk.rstrip() + closing
+
+                # Mở lại markers ở đầu chunk tiếp theo
+                opening = "".join(unclosed)
+                remaining = opening + remaining
+
+            chunks.append(chunk)
 
         return chunks

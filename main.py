@@ -337,6 +337,12 @@ def main() -> None:
         logger.error("✗ Lỗi config: %s", exc)
         sys.exit(1)
 
+    # ── Configure token counter theo provider ──
+    from chahi.infrastructure.llm.token_counter import configure as configure_tokenizer
+
+    configure_tokenizer(llm_settings.provider)
+    logger.info("Token counter: provider=%s", llm_settings.provider)
+
     # ── 2. Khởi tạo dependencies (Strategy Pattern + Memory) ──
     news_fetcher = RSSNewsFetcher(source_name="RSS")
     llm_client = create_llm_client(settings=llm_settings)
@@ -344,42 +350,50 @@ def main() -> None:
     memory_settings = config_reader.get_memory_settings()
     memory_manager = create_memory_manager(settings=memory_settings)
 
-    # ── 3. Khởi tạo & chạy Use Case ──
-    use_case = GenerateMacroReportUseCase(
-        config_reader=config_reader,
-        news_fetcher=news_fetcher,
-        llm_client=llm_client,
-        memory_manager=memory_manager,
-    )
-
     try:
-        logger.info("─" * 50)
-        report_content = use_case.execute()
-        logger.info("─" * 50)
-    except ConnectionError as exc:
-        logger.error("✗ %s", exc)
-        sys.exit(1)
-    except RuntimeError as exc:
-        logger.error("✗ Lỗi LLM: %s", exc)
-        sys.exit(1)
+        # ── 3. Khởi tạo & chạy Use Case ──
+        use_case = GenerateMacroReportUseCase(
+            config_reader=config_reader,
+            news_fetcher=news_fetcher,
+            llm_client=llm_client,
+            memory_manager=memory_manager,
+        )
 
-    # ── 4. Validate & lưu báo cáo ──
-    try:
-        validated_dir = _validate_output_dir(output_dir)
-    except ValueError as exc:
-        logger.error("✗ %s", exc)
-        sys.exit(1)
+        try:
+            logger.info("─" * 50)
+            report_content = use_case.execute()
+            logger.info("─" * 50)
+        except ConnectionError as exc:
+            logger.error("✗ %s", exc)
+            sys.exit(1)
+        except RuntimeError as exc:
+            logger.error("✗ Lỗi LLM: %s", exc)
+            sys.exit(1)
 
-    report_path = _save_report(report_content, validated_dir)
-    logger.info("=" * 50)
-    logger.info("✓ Báo cáo đã lưu: %s", report_path)
-    logger.info("=" * 50)
+        # ── 4. Validate & lưu báo cáo ──
+        try:
+            validated_dir = _validate_output_dir(output_dir)
+        except ValueError as exc:
+            logger.error("✗ %s", exc)
+            sys.exit(1)
 
-    # ── 5. Gửi thông báo (Telegram / Discord) ──
-    _send_notifications(config_reader, report_content, channels=channels)
+        report_path = _save_report(report_content, validated_dir)
+        logger.info("=" * 50)
+        logger.info("✓ Báo cáo đã lưu: %s", report_path)
+        logger.info("=" * 50)
 
-    # ── Print preview ──
-    _print_preview(report_content)
+        # ── 5. Gửi thông báo (Telegram / Discord) ──
+        _send_notifications(config_reader, report_content, channels=channels)
+
+        # ── Print preview ──
+        _print_preview(report_content)
+
+    finally:
+        # ── Giải phóng tài nguyên (socket connections) ──
+        news_fetcher.close()
+        if memory_manager is not None:
+            memory_manager.close()
+        logger.debug("Resources cleaned up.")
 
 
 if __name__ == "__main__":

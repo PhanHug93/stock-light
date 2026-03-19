@@ -30,6 +30,11 @@ class LMStudioClient(ILLMClient):
                   temperature, timeout).
     """
 
+    @property
+    def supports_concurrency(self) -> bool:
+        """Local LLM xử lý queue-based, không hỗ trợ song song."""
+        return False
+
     def __init__(
         self,
         settings: LLMSettings,

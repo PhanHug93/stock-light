@@ -66,7 +66,7 @@ class TestFileMemoryManager:
         mgr.save_context("Content")
 
         file_content = (tmp_path / "last_context.md").read_text()
-        assert "<!-- Saved:" in file_content
+        assert "<!-- [default] Saved:" in file_content
         assert "UTC -->" in file_content
 
 

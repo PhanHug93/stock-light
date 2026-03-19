@@ -88,6 +88,7 @@ class INewsFetcher(ABC):
 
     Chịu trách nhiệm kết nối tới URL, parse dữ liệu,
     và trả về danh sách Article đã chuẩn hóa.
+    Hỗ trợ context manager để đảm bảo giải phóng tài nguyên.
     """
 
     @abstractmethod
@@ -107,6 +108,15 @@ class INewsFetcher(ABC):
             ConnectionError: Khi không thể kết nối tới URL.
             ValueError: Khi dữ liệu trả về không parse được.
         """
+
+    def close(self) -> None:  # noqa: B027
+        """Giải phóng tài nguyên (HTTP sessions, connections)."""
+
+    def __enter__(self) -> INewsFetcher:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self.close()
 
 
 class ILLMClient(ABC):
@@ -134,6 +144,17 @@ class ILLMClient(ABC):
             RuntimeError: Khi LLM trả về response không hợp lệ.
         """
 
+    @property
+    def supports_concurrency(self) -> bool:
+        """Cho biết LLM có xử lý song song được không.
+
+        Cloud APIs (Gemini, OpenAI) → True (auto-scaling).
+        Local LLM (LM Studio/llama.cpp) → False (queue-based).
+
+        Override trong subclass nếu cần.
+        """
+        return True
+
 
 class IMemoryManager(ABC):
     """Contract cho component quản lý bộ nhớ dài hạn (Long-term Memory).
@@ -144,6 +165,7 @@ class IMemoryManager(ABC):
 
     Tuân thủ DI: core layer không biết memory được lưu ở đâu
     (file, MCP server, database, ...).
+    Hỗ trợ context manager để đảm bảo giải phóng tài nguyên.
     """
 
     @abstractmethod
@@ -165,6 +187,15 @@ class IMemoryManager(ABC):
         Raises:
             RuntimeError: Khi không thể lưu được (disk full, MCP down, ...).
         """
+
+    def close(self) -> None:  # noqa: B027
+        """Giải phóng tài nguyên (HTTP sessions, connections)."""
+
+    def __enter__(self) -> IMemoryManager:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self.close()
 
 
 class INotifier(ABC):
