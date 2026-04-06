@@ -238,6 +238,19 @@ python main.py --provider openai --dump-llm-input-dir ./llm_inputs --no-memory-s
 python main.py --provider openai --dump-llm-input-dir ./llm_inputs --no-memory-store --discord
 ```
 
+### Chạy độc lập, không phụ thuộc provider LLM
+
+Nếu chỉ cần xuất input để request ở hệ thống khác, dùng mode capture-only:
+
+```bash
+python main.py --dump-llm-input-only --dump-llm-input-dir ./llm_inputs --telegram
+```
+
+Mode này:
+- Không gọi OpenAI/Gemini/LM Studio
+- Tự động không lưu memory mới (tránh nhầm lẫn với nhận định chuẩn)
+- Vẫn có thể gửi Telegram/Discord
+
 ### Chọn kênh gửi notification
 
 `--telegram` / `--discord` hoạt động ở cả 2 mode:

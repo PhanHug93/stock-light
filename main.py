@@ -11,6 +11,7 @@ Usage:
     python main.py --output-dir ./my-reports
     python main.py --provider openai --api-key "$OPENAI_API_KEY" --model gpt-5.4
     python main.py --dump-llm-input-dir ./llm_inputs
+    python main.py --dump-llm-input-only --dump-llm-input-dir ./llm_inputs
     python main.py --dump-llm-input-dir ./llm_inputs --no-memory-store --telegram
 """
 
@@ -176,6 +177,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Dump input (system prompt + user content) trước mỗi lần gọi LLM "
             "vào thư mục chỉ định."
+        ),
+    )
+    parser.add_argument(
+        "--dump-llm-input-only",
+        action="store_true",
+        default=False,
+        help=(
+            "Chỉ dump input LLM, không gọi provider API. "
+            "Phù hợp để đem input sang nơi khác request."
         ),
     )
     parser.add_argument(
@@ -477,39 +487,59 @@ def main() -> None:
     try:
         config_reader = YamlConfigReader(config_path=args.config)
         llm_settings = config_reader.get_llm_settings()
-        llm_settings = _apply_llm_cli_overrides(llm_settings, args)
+        if not args.dump_llm_input_only:
+            llm_settings = _apply_llm_cli_overrides(llm_settings, args)
         logger.info("Config loaded: %s", args.config)
     except (FileNotFoundError, ValueError) as exc:
         logger.error("✗ Lỗi config: %s", exc)
         sys.exit(1)
 
-    # ── Configure token counter theo provider ──
+    # ── Configure token counter ──
     from chahi.infrastructure.llm.token_counter import configure as configure_tokenizer
 
-    configure_tokenizer(llm_settings.provider)
-    logger.info("Token counter: provider=%s", llm_settings.provider)
+    tokenizer_provider = llm_settings.provider
+    if args.dump_llm_input_only:
+        tokenizer_provider = "gemini"
+    configure_tokenizer(tokenizer_provider)
+    logger.info("Token counter: provider=%s", tokenizer_provider)
 
     # ── 2. Khởi tạo dependencies (Strategy Pattern + Memory) ──
     news_fetcher = RSSNewsFetcher(source_name="RSS")
-    llm_client = create_llm_client(settings=llm_settings)
-    if args.dump_llm_input_dir is not None:
-        from chahi.infrastructure.llm.recording_client import RecordingLLMClient
+    dump_dir = args.dump_llm_input_dir
+    if args.dump_llm_input_only and dump_dir is None:
+        dump_dir = Path("./llm_inputs")
 
-        llm_client = RecordingLLMClient(
-            delegate=llm_client,
-            dump_dir=args.dump_llm_input_dir,
-        )
-        logger.info("LLM input dump enabled: %s", args.dump_llm_input_dir.resolve())
+    if args.dump_llm_input_only:
+        from chahi.infrastructure.llm.capture_only_client import CaptureOnlyLLMClient
+
+        if dump_dir is None:
+            logger.error("✗ dump_dir không hợp lệ cho --dump-llm-input-only")
+            sys.exit(1)
+
+        llm_client = CaptureOnlyLLMClient(dump_dir=dump_dir)
+        logger.info("LLM mode: CAPTURE_ONLY (no provider calls)")
+        logger.info("LLM input dump directory: %s", dump_dir.resolve())
+    else:
+        llm_client = create_llm_client(settings=llm_settings)
+        if dump_dir is not None:
+            from chahi.infrastructure.llm.recording_client import RecordingLLMClient
+
+            llm_client = RecordingLLMClient(
+                delegate=llm_client,
+                dump_dir=dump_dir,
+            )
+            logger.info("LLM input dump enabled: %s", dump_dir.resolve())
 
     memory_settings = config_reader.get_memory_settings()
     memory_manager = create_memory_manager(settings=memory_settings)
-    if args.no_memory_store:
+    no_memory_store = args.no_memory_store or args.dump_llm_input_only
+    if no_memory_store:
         from chahi.infrastructure.memory.read_only_memory_manager import (
             ReadOnlyMemoryManager,
         )
 
         memory_manager = ReadOnlyMemoryManager(delegate=memory_manager)
-        logger.info("Memory store disabled (--no-memory-store): chỉ read, không save.")
+        logger.info("Memory store disabled: chỉ read, không save.")
 
     try:
         # ── 3. Khởi tạo & chạy Use Case ──
