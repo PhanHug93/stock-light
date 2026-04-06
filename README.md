@@ -236,6 +236,7 @@ Bạn vẫn có thể gửi notification như bình thường, nhưng không lư
 ```bash
 python main.py --provider openai --dump-llm-input-dir ./llm_inputs --no-memory-store --telegram
 python main.py --provider openai --dump-llm-input-dir ./llm_inputs --no-memory-store --discord
+python main.py --provider openai --dump-llm-input-dir ./llm_inputs --no-memory-store --discord --discord-attach-dump
 ```
 
 ### Chạy độc lập, không phụ thuộc provider LLM
@@ -244,12 +245,14 @@ Nếu chỉ cần xuất input để request ở hệ thống khác, dùng mode 
 
 ```bash
 python main.py --dump-llm-input-only --dump-llm-input-dir ./llm_inputs --telegram
+python main.py --dump-llm-input-only --dump-llm-input-dir ./llm_inputs --discord --discord-attach-dump
 ```
 
 Mode này:
 - Không gọi OpenAI/Gemini/LM Studio
 - Tự động không lưu memory mới (tránh nhầm lẫn với nhận định chuẩn)
 - Vẫn có thể gửi Telegram/Discord
+- Nếu bật `--discord-attach-dump`, file `.md` dump sẽ được gửi kèm lên Discord
 
 ### Chọn kênh gửi notification
 

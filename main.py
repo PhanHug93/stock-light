@@ -13,6 +13,7 @@ Usage:
     python main.py --dump-llm-input-dir ./llm_inputs
     python main.py --dump-llm-input-only --dump-llm-input-dir ./llm_inputs
     python main.py --dump-llm-input-dir ./llm_inputs --no-memory-store --telegram
+    python main.py --dump-llm-input-only --discord --discord-attach-dump
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ import argparse
 import logging
 import logging.handlers
 import sys
+import time
 from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
@@ -197,6 +199,15 @@ def _build_parser() -> argparse.ArgumentParser:
             "Phù hợp khi chạy debug/fallback để tránh bẩn memory."
         ),
     )
+    parser.add_argument(
+        "--discord-attach-dump",
+        action="store_true",
+        default=False,
+        help=(
+            "Khi có dump files, gửi kèm file .md lên Discord dưới dạng attachment "
+            "(chỉ áp dụng cho Discord)."
+        ),
+    )
 
     llm_group = parser.add_argument_group("LLM overrides")
     llm_group.add_argument(
@@ -354,6 +365,56 @@ def _send_notifications(
             logger.info("Không có kênh thông báo nào được bật.")
     except Exception as exc:  # noqa: BLE001
         logger.warning("Lỗi gửi thông báo: %s", exc)
+
+
+def _collect_dump_files_since(dump_dir: Path, since_epoch: float) -> list[Path]:
+    """Lấy dump files mới tạo kể từ mốc thời gian chỉ định."""
+    if not dump_dir.exists():
+        return []
+
+    files = [
+        path
+        for path in dump_dir.glob("llm_input_*.md")
+        if path.is_file() and path.stat().st_mtime >= since_epoch
+    ]
+    files.sort(key=lambda path: path.stat().st_mtime)
+    return files
+
+
+def _send_discord_dump_attachments(
+    config_reader: YamlConfigReader,
+    dump_files: list[Path],
+    channels: list[str] | None = None,
+) -> None:
+    """Gửi dump files lên Discord webhook dưới dạng attachment."""
+    if not dump_files:
+        return
+
+    if channels is not None and "discord" not in channels:
+        return
+
+    try:
+        all_settings = config_reader.get_notification_settings()
+        discord_settings = [
+            s
+            for s in all_settings
+            if s.enabled and s.type == "discord" and s.webhook_url
+        ]
+        if not discord_settings:
+            logger.info("Không có Discord enabled để gửi dump attachments.")
+            return
+
+        from chahi.infrastructure.notifiers.discord_notifier import DiscordNotifier
+
+        for setting in discord_settings:
+            notifier = DiscordNotifier(setting)
+            for file_path in dump_files:
+                notifier.send_file_attachment(
+                    file_path=file_path,
+                    comment=f"📎 LLM dump input: `{file_path.name}`",
+                )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Lỗi gửi Discord dump attachments: %s", exc)
 
 
 def _print_preview(report_content: str) -> None:
@@ -550,6 +611,8 @@ def main() -> None:
             memory_manager=memory_manager,
         )
 
+        run_started_at = time.time()
+
         try:
             logger.info("─" * 50)
             report_content = use_case.execute()
@@ -575,6 +638,20 @@ def main() -> None:
 
         # ── 5. Gửi thông báo (Telegram / Discord) ──
         _send_notifications(config_reader, report_content, channels=channels)
+        if args.discord_attach_dump and dump_dir is not None:
+            dump_files = _collect_dump_files_since(
+                dump_dir=dump_dir,
+                since_epoch=run_started_at,
+            )
+            if dump_files:
+                logger.info("Discord dump attachments: %d file(s)", len(dump_files))
+                _send_discord_dump_attachments(
+                    config_reader=config_reader,
+                    dump_files=dump_files,
+                    channels=channels,
+                )
+            else:
+                logger.info("Không có dump file mới để gửi Discord.")
 
         # ── Print preview ──
         _print_preview(report_content)
