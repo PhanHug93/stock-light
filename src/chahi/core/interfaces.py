@@ -109,6 +109,30 @@ class INewsFetcher(ABC):
             ValueError: Khi dữ liệu trả về không parse được.
         """
 
+    def fetch_many(
+        self,
+        tasks: list[tuple[SourceCategory, SourceConfig]],
+        limit: int = 10,
+    ) -> dict[SourceCategory, list[Article]]:
+        """Fetch nhiều nguồn tin trong một lần gọi.
+
+        Backend có thể override để tối ưu bằng asyncio/batch I/O.
+        Mặc định fallback tuần tự bằng ``fetch_news()`` để giữ tương thích.
+
+        Args:
+            tasks: Danh sách tuple ``(category, source_config)``.
+            limit: Số lượng bài tối đa cho mỗi source.
+
+        Returns:
+            Dict ``category -> list[Article]``.
+        """
+        result: dict[SourceCategory, list[Article]] = {}
+        for category, source in tasks:
+            if category not in result:
+                result[category] = []
+            result[category].extend(self.fetch_news(url=source.url, limit=limit))
+        return result
+
     def close(self) -> None:  # noqa: B027
         """Giải phóng tài nguyên (HTTP sessions, connections)."""
 

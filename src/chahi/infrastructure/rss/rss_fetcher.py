@@ -1,22 +1,26 @@
 """RSS News Fetcher — implementation of INewsFetcher.
 
-Cào tin tức từ RSS feeds sử dụng ``requests`` + ``feedparser``.
+Hỗ trợ 2 chế độ:
+1. ``fetch_news()`` sync cho từng feed đơn lẻ (giữ tương thích cũ).
+2. ``fetch_many()`` async batch qua ``httpx.AsyncClient`` cho crawling diện rộng.
 
 Bảo mật & chịu tải:
-    - Timeout 15s cho mỗi HTTP request.
-    - Retry 2 lần với exponential backoff khi gặp 5xx.
-    - User-Agent header để tránh bị RSS servers block.
-    - HTML cleaning bằng BeautifulSoup4 (an toàn, xử lý nested/malformed HTML).
-    - Token-based truncation thay vì character count.
-    - Deep Scraper: Tự động bóc tách full-text khi RSS summary quá ngắn.
-    - ProcessPool cho trafilatura (CPU-bound) tránh GIL blocking.
+    - Timeout + retry có backoff cho lỗi mạng/5xx/429.
+    - Manual redirect với kiểm tra SSRF target.
+    - Semaphore + jitter delay để tránh burst gây rate-limit.
+    - Deep Scraper khi summary RSS quá ngắn.
+    - Fallback ``curl_cffi`` khi deep scraper gặp HTTP 403.
+    - Full-text disk cache (diskcache) cho URL bài viết đã scrape.
 """
 
 from __future__ import annotations
 
+import asyncio
 import calendar
+import importlib
 import ipaddress
 import logging
+import random
 import re
 import socket
 import threading
@@ -24,10 +28,12 @@ from collections import defaultdict
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
-from typing import Any
-from urllib.parse import urlparse
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+from urllib.parse import urljoin, urlparse
 
 import feedparser  # type: ignore[import-untyped]
+import httpx
 import requests
 import trafilatura
 from bs4 import BeautifulSoup
@@ -39,6 +45,11 @@ from chahi.core.entities import Article
 from chahi.core.interfaces import INewsFetcher
 from chahi.infrastructure.llm.token_counter import truncate_to_token_budget
 from chahi.infrastructure.rss.rss_cache import RSSCache
+
+if TYPE_CHECKING:
+    from chahi.core.entities import SourceCategory, SourceConfig
+
+curl_cffi_requests: Any | None = None
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +65,11 @@ _MAX_RETRIES: int = 2  # retry cho 5xx errors
 _CPU_WORKERS: int = 2  # ProcessPool workers cho trafilatura
 _CIRCUIT_BREAKER_THRESHOLD: int = 2  # Sau N failures liên tiếp → ngắt domain
 _MAX_REDIRECTS: int = 5  # Tối đa redirect hops (chống SSRF)
+_ASYNC_MAX_CONNECTIONS: int = 20  # Giới hạn kết nối đồng thời an toàn
+_ASYNC_JITTER_MIN: float = 0.05
+_ASYNC_JITTER_MAX: float = 0.20
+_FULL_TEXT_CACHE_DIR = Path(".cache/fulltext")
+_RETRYABLE_STATUS_CODES: set[int] = {429, 502, 503, 504}
 
 
 # ── Helper functions ────────────────────────────────────────
@@ -266,12 +282,24 @@ class RSSNewsFetcher(INewsFetcher):
         # Circuit breaker: domain → số failures liên tiếp (thread-safe)
         self._domain_failures: dict[str, int] = defaultdict(int)
         self._breaker_lock = threading.Lock()
+        self._fulltext_cache: Any | None = None
+        try:
+            from diskcache import Cache  # type: ignore[import-not-found]
+
+            self._fulltext_cache = Cache(str(_FULL_TEXT_CACHE_DIR))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("DiskCache unavailable, deep cache disabled: %s", exc)
 
     def close(self) -> None:
         """Đóng HTTP session và CPU pool, giải phóng tài nguyên."""
         self._session.close()
-        self._cpu_pool.stop()
+        self._cpu_pool.stop()  # type: ignore[no-untyped-call]
         self._cpu_pool.join(timeout=5)
+        if self._fulltext_cache is not None:
+            try:
+                self._fulltext_cache.close()
+            except Exception:  # noqa: BLE001
+                logger.debug("Không thể đóng diskcache fulltext.", exc_info=True)
         logger.debug("RSSNewsFetcher resources closed.")
 
     def fetch_news(self, url: str, limit: int = 10) -> list[Article]:
@@ -319,6 +347,165 @@ class RSSNewsFetcher(INewsFetcher):
             url,
         )
 
+        return articles
+
+    def fetch_many(
+        self,
+        tasks: list[tuple[SourceCategory, SourceConfig]],
+        limit: int = 10,
+    ) -> dict[SourceCategory, list[Article]]:
+        """Fetch batch nhiều RSS sources bằng async I/O an toàn."""
+        if not tasks:
+            return {}
+
+        logger.info(
+            "Batch crawling %d sources bằng async (max_connections=%d)",
+            len(tasks),
+            _ASYNC_MAX_CONNECTIONS,
+        )
+
+        try:
+            return asyncio.run(self._fetch_many_async(tasks=tasks, limit=limit))
+        except RuntimeError as exc:
+            if "asyncio.run() cannot be called from a running event loop" not in str(
+                exc
+            ):
+                raise
+
+            # Fallback an toàn khi fetcher được gọi từ môi trường đã có event loop.
+            result_holder: dict[str, dict[SourceCategory, list[Article]]] = {}
+            error_holder: dict[str, Exception] = {}
+
+            def _runner() -> None:
+                try:
+                    result_holder["result"] = asyncio.run(
+                        self._fetch_many_async(tasks=tasks, limit=limit)
+                    )
+                except Exception as run_exc:  # noqa: BLE001
+                    error_holder["error"] = run_exc
+
+            thread = threading.Thread(target=_runner, daemon=True)
+            thread.start()
+            thread.join()
+
+            if "error" in error_holder:
+                raise RuntimeError(
+                    "fetch_many async thread fallback thất bại"
+                ) from error_holder["error"]
+            return result_holder.get("result", {})
+
+    async def _fetch_many_async(
+        self,
+        tasks: list[tuple[SourceCategory, SourceConfig]],
+        limit: int,
+    ) -> dict[SourceCategory, list[Article]]:
+        """Async worker cho batch RSS crawling."""
+        semaphore = asyncio.Semaphore(_ASYNC_MAX_CONNECTIONS)
+        limits = httpx.Limits(
+            max_connections=_ASYNC_MAX_CONNECTIONS,
+            max_keepalive_connections=_ASYNC_MAX_CONNECTIONS,
+        )
+        timeout = httpx.Timeout(self._timeout)
+
+        result: dict[SourceCategory, list[Article]] = {}
+        async with httpx.AsyncClient(
+            headers={"User-Agent": _USER_AGENT},
+            limits=limits,
+            timeout=timeout,
+            follow_redirects=False,
+        ) as client:
+            coros = [
+                self._fetch_single_source_async(
+                    client=client,
+                    semaphore=semaphore,
+                    category=category,
+                    source=source,
+                    limit=limit,
+                )
+                for category, source in tasks
+            ]
+            done = await asyncio.gather(*coros, return_exceptions=True)
+
+        for item in done:
+            if isinstance(item, Exception):
+                logger.warning("Batch fetch source lỗi: %s", item)
+                continue
+            if not isinstance(item, tuple):
+                logger.warning("Batch fetch source trả về kiểu không hợp lệ: %r", item)
+                continue
+
+            category, source_name, articles = item
+            if category not in result:
+                result[category] = []
+            result[category].extend(articles)
+            logger.info("  [%s] %s → %d bài", category, source_name, len(articles))
+
+        return result
+
+    async def _fetch_single_source_async(
+        self,
+        client: httpx.AsyncClient,
+        semaphore: asyncio.Semaphore,
+        category: SourceCategory,
+        source: SourceConfig,
+        limit: int,
+    ) -> tuple[SourceCategory, str, list[Article]]:
+        """Fetch và parse một source trong batch async."""
+        try:
+            articles = await self._fetch_news_async(
+                client=client,
+                semaphore=semaphore,
+                url=source.url,
+                source_name=source.name,
+                limit=limit,
+            )
+            return category, source.name, articles
+        except Exception as exc:
+            raise ConnectionError(f"{source.name}: {exc}") from exc
+
+    async def _fetch_news_async(
+        self,
+        client: httpx.AsyncClient,
+        semaphore: asyncio.Semaphore,
+        url: str,
+        source_name: str,
+        limit: int,
+    ) -> list[Article]:
+        """Async version của fetch_news cho batch mode."""
+        raw_content = await self._http_get_async(
+            client=client,
+            semaphore=semaphore,
+            url=url,
+        )
+        feed = feedparser.parse(raw_content)
+
+        if feed.bozo and not feed.entries:
+            exception_msg = str(getattr(feed, "bozo_exception", "Unknown error"))
+            raise ConnectionError(
+                f"Không thể parse RSS feed: {url}. Lỗi: {exception_msg}"
+            )
+
+        entries = feed.entries[:limit]
+        coros = [
+            self._parse_entry_async(
+                entry=entry,
+                source_name=source_name,
+                client=client,
+                semaphore=semaphore,
+            )
+            for entry in entries
+        ]
+        parsed_entries = await asyncio.gather(*coros, return_exceptions=True)
+
+        articles: list[Article] = []
+        for item in parsed_entries:
+            if isinstance(item, BaseException):
+                logger.warning("  Parse entry lỗi (%s): %s", url, item)
+                continue
+            if item is not None:
+                articles.append(item)
+
+        logger.info("Parsed %d/%d articles từ %s", len(articles), len(entries), url)
         return articles
 
     # ── Private: HTTP ───────────────────────────────────────
@@ -390,6 +577,170 @@ class RSSNewsFetcher(INewsFetcher):
 
         return response.content
 
+    async def _http_get_async(
+        self,
+        client: httpx.AsyncClient,
+        semaphore: asyncio.Semaphore,
+        url: str,
+    ) -> bytes:
+        """Async fetch URL với Conditional GET (ETag/Last-Modified)."""
+        extra_headers = self._cache.get_headers(url)
+
+        response = await self._safe_get_with_retries_async(
+            client=client,
+            semaphore=semaphore,
+            url=url,
+            headers=extra_headers,
+        )
+
+        if response.status_code == 304:
+            cached = self._cache.get_cached_content(url)
+            if cached is not None:
+                logger.info("  304 Not Modified, dùng cache: %s", url)
+                return cached
+            logger.warning("  304 nhưng không có cache, fetch lại: %s", url)
+            response = await self._safe_get_with_retries_async(
+                client=client,
+                semaphore=semaphore,
+                url=url,
+            )
+
+        if response.status_code >= 400:
+            raise ConnectionError(f"RSS feed trả về HTTP {response.status_code}: {url}")
+
+        self._cache.update(
+            url=url,
+            content=response.content,
+            etag=response.headers.get("ETag"),
+            last_modified=response.headers.get("Last-Modified"),
+        )
+        return response.content
+
+    async def _safe_get_with_retries_async(
+        self,
+        client: httpx.AsyncClient,
+        semaphore: asyncio.Semaphore,
+        url: str,
+        headers: dict[str, str] | None = None,
+    ) -> httpx.Response:
+        """Async GET với retry/backoff cho lỗi mạng và status retryable."""
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                response = await self._safe_get_async(
+                    client=client,
+                    semaphore=semaphore,
+                    url=url,
+                    headers=headers,
+                )
+            except httpx.TimeoutException as exc:
+                if attempt >= _MAX_RETRIES:
+                    raise ConnectionError(
+                        f"HTTP timeout sau {self._timeout}s: {url}"
+                    ) from exc
+                await self._sleep_with_backoff(attempt)
+                continue
+            except httpx.RequestError as exc:
+                if attempt >= _MAX_RETRIES:
+                    raise ConnectionError(
+                        f"Không thể kết nối tới URL: {url}. Lỗi: {exc}"
+                    ) from exc
+                await self._sleep_with_backoff(attempt)
+                continue
+
+            if (
+                response.status_code in _RETRYABLE_STATUS_CODES
+                and attempt < _MAX_RETRIES
+            ):
+                retry_after = self._parse_retry_after(
+                    response.headers.get("Retry-After")
+                )
+                await self._sleep_with_backoff(attempt, retry_after=retry_after)
+                continue
+
+            return response
+
+        raise ConnectionError(f"Không thể fetch URL sau retry: {url}")
+
+    async def _safe_get_async(
+        self,
+        client: httpx.AsyncClient,
+        semaphore: asyncio.Semaphore,
+        url: str,
+        headers: dict[str, str] | None = None,
+    ) -> httpx.Response:
+        """HTTP GET async với manual redirect + SSRF validation."""
+        parsed = urlparse(url)
+        if _is_ssrf_target(parsed.hostname or ""):
+            raise ConnectionError(f"SSRF blocked: {url} resolves to private IP")
+
+        current_url = url
+        for _ in range(_MAX_REDIRECTS):
+            response = await self._throttled_get_async(
+                client=client,
+                semaphore=semaphore,
+                url=current_url,
+                headers=headers,
+            )
+
+            if response.status_code not in (301, 302, 303, 307, 308):
+                return response
+
+            location = response.headers.get("Location")
+            if not location:
+                return response
+
+            next_url = urljoin(current_url, location)
+            parsed_next = urlparse(next_url)
+            next_host = parsed_next.hostname or ""
+            if parsed_next.scheme not in ("http", "https"):
+                raise ConnectionError(
+                    f"SSRF blocked: redirect to non-HTTP scheme {parsed_next.scheme}://{next_host}"
+                )
+            if _is_ssrf_target(next_host):
+                raise ConnectionError(
+                    "SSRF blocked: redirect to private IP "
+                    f"{next_host} (from {current_url})"
+                )
+
+            logger.debug("  Async redirect %s → %s", current_url, next_url)
+            current_url = next_url
+
+        raise ConnectionError(f"Quá nhiều redirects (>{_MAX_REDIRECTS}) cho: {url}")
+
+    async def _throttled_get_async(
+        self,
+        client: httpx.AsyncClient,
+        semaphore: asyncio.Semaphore,
+        url: str,
+        headers: dict[str, str] | None = None,
+    ) -> httpx.Response:
+        """GET request bọc semaphore + jitter delay để giảm burst."""
+        async with semaphore:
+            await asyncio.sleep(random.uniform(_ASYNC_JITTER_MIN, _ASYNC_JITTER_MAX))
+            return await client.get(
+                url,
+                headers=headers,
+                follow_redirects=False,
+            )
+
+    async def _sleep_with_backoff(self, attempt: int, retry_after: float = 0.0) -> None:
+        """Sleep exponential backoff + jitter cho retry loop."""
+        backoff = 0.5 * (2**attempt)
+        delay = max(backoff, retry_after) + random.uniform(
+            _ASYNC_JITTER_MIN, _ASYNC_JITTER_MAX
+        )
+        await asyncio.sleep(delay)
+
+    @staticmethod
+    def _parse_retry_after(value: str | None) -> float:
+        """Parse Retry-After header thành giây."""
+        if not value:
+            return 0.0
+        try:
+            return max(0.0, float(value.strip()))
+        except ValueError:
+            return 0.0
+
     # ── Private: Deep Scraper (Full-text Extraction) ────────
 
     def _fetch_full_text(self, url: str) -> str | None:
@@ -410,6 +761,11 @@ class RSSNewsFetcher(INewsFetcher):
         Returns:
             Full-text đã extract, hoặc None nếu thất bại.
         """
+        cached = self._get_cached_full_text(url)
+        if cached is not None:
+            logger.debug("  Deep cache hit: %s", url)
+            return cached
+
         # ── Phase 1: I/O-bound (thread-safe) ──
         try:
             response = _safe_get(self._session, url, timeout=self._timeout)
@@ -431,38 +787,169 @@ class RSSNewsFetcher(INewsFetcher):
             logger.warning("  Deep Scraper lỗi không xác định: %s — %s", url, exc)
             return None
 
-        # ── Phase 2: CPU-bound (ProcessPool, tránh GIL) ──
-        # Dùng pebble.ProcessPool — cancel() sends SIGKILL nếu timeout,
-        # ngăn zombie workers exhaustion.
+        text = self._extract_full_text_with_pool(response.text, url)
+        if text is not None:
+            self._set_cached_full_text(url, text)
+        return text
+
+    async def _fetch_full_text_async(
+        self,
+        url: str,
+        client: httpx.AsyncClient,
+        semaphore: asyncio.Semaphore,
+    ) -> str | None:
+        """Async deep scraper với fallback curl_cffi khi gặp HTTP 403."""
+        cached = await asyncio.to_thread(self._get_cached_full_text, url)
+        if cached is not None:
+            logger.debug("  Deep cache hit: %s", url)
+            return cached
+
+        html_text: str | None = None
+        try:
+            response = await self._safe_get_with_retries_async(
+                client=client,
+                semaphore=semaphore,
+                url=url,
+            )
+        except ConnectionError as exc:
+            logger.warning("  Deep Scraper không kết nối được: %s (%s)", url, exc)
+            return None
+
+        if response.status_code == 403:
+            logger.info(
+                "  Deep Scraper gặp HTTP 403, thử fallback curl_cffi: %s",
+                url,
+            )
+            html_text = await self._fetch_html_with_curl_cffi_async(
+                url=url,
+                semaphore=semaphore,
+            )
+            if html_text is None:
+                logger.warning("  Fallback curl_cffi thất bại: %s", url)
+                return None
+        elif response.status_code >= 400:
+            logger.warning(
+                "  Deep Scraper bị chặn (HTTP %d): %s",
+                response.status_code,
+                url,
+            )
+            return None
+        else:
+            html_text = response.text
+
+        text = await asyncio.to_thread(
+            self._extract_full_text_with_pool,
+            html_text,
+            url,
+        )
+        if text is not None:
+            await asyncio.to_thread(self._set_cached_full_text, url, text)
+        return text
+
+    async def _fetch_html_with_curl_cffi_async(
+        self,
+        url: str,
+        semaphore: asyncio.Semaphore,
+    ) -> str | None:
+        """Run curl_cffi fallback trong thread để không chặn event loop."""
+        async with semaphore:
+            await asyncio.sleep(random.uniform(_ASYNC_JITTER_MIN, _ASYNC_JITTER_MAX))
+            return await asyncio.to_thread(self._fetch_html_with_curl_cffi, url)
+
+    def _fetch_html_with_curl_cffi(self, url: str) -> str | None:
+        """Fallback dùng curl_cffi giả lập fingerprint trình duyệt."""
+        global curl_cffi_requests
+
+        parsed = urlparse(url)
+        if _is_ssrf_target(parsed.hostname or ""):
+            logger.warning("  curl_cffi blocked bởi SSRF policy: %s", url)
+            return None
+
+        if curl_cffi_requests is None:
+            try:
+                curl_cffi_requests = importlib.import_module("curl_cffi.requests")
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("  curl_cffi chưa khả dụng: %s", exc)
+                return None
+
+        try:
+            response = curl_cffi_requests.get(
+                url,
+                timeout=self._timeout,
+                impersonate="chrome124",
+            )
+            response.raise_for_status()
+            return str(response.text)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("  curl_cffi fallback lỗi: %s — %s", url, exc)
+            return None
+
+    def _extract_full_text_with_pool(self, html_text: str, url: str) -> str | None:
+        """Extract full-text bằng ProcessPool để tránh block GIL."""
         try:
             future = self._cpu_pool.schedule(
                 _trafilatura_extract,
-                args=(response.text,),
+                args=[html_text],
                 timeout=30,
             )
             text = future.result()
         except FutureTimeoutError:
-            future.cancel()
+            future.cancel()  # type: ignore[no-untyped-call]
             logger.warning("  trafilatura timeout 30s (worker killed): %s", url)
             return None
         except Exception:  # noqa: BLE001
             logger.warning("  trafilatura extract thất bại: %s", url)
             return None
 
-        if not text or not text.strip():
+        if not isinstance(text, str) or not text.strip():
             logger.debug("  trafilatura trả về empty cho: %s", url)
             return None
 
-        logger.info(
-            "  ✅ Deep Scraper: extracted %d chars từ %s",
-            len(text),
-            url,
-        )
+        logger.info("  ✅ Deep Scraper: extracted %d chars từ %s", len(text), url)
         return text.strip()
+
+    def _get_cached_full_text(self, url: str) -> str | None:
+        """Đọc full-text cache từ diskcache nếu có."""
+        if self._fulltext_cache is None:
+            return None
+        try:
+            cached = self._fulltext_cache.get(url)
+        except Exception:  # noqa: BLE001
+            logger.debug("  Lỗi đọc diskcache fulltext: %s", url, exc_info=True)
+            return None
+        if isinstance(cached, str) and cached.strip():
+            return cached.strip()
+        return None
+
+    def _set_cached_full_text(self, url: str, text: str) -> None:
+        """Ghi full-text vào diskcache để tái sử dụng cho lần chạy sau."""
+        if self._fulltext_cache is None or not text.strip():
+            return
+        try:
+            self._fulltext_cache.set(url, text.strip())
+        except Exception:  # noqa: BLE001
+            logger.debug("  Lỗi ghi diskcache fulltext: %s", url, exc_info=True)
+
+    def _is_domain_breaker_open(self, domain: str) -> bool:
+        with self._breaker_lock:
+            return self._domain_failures[domain] >= _CIRCUIT_BREAKER_THRESHOLD
+
+    def _record_domain_success(self, domain: str) -> None:
+        with self._breaker_lock:
+            self._domain_failures[domain] = 0
+
+    def _record_domain_failure(self, domain: str) -> int:
+        with self._breaker_lock:
+            self._domain_failures[domain] += 1
+            return self._domain_failures[domain]
 
     # ── Private: Entry Parsing ──────────────────────────────
 
-    def _parse_entry(self, entry: Any) -> Article | None:
+    def _parse_entry(
+        self,
+        entry: Any,
+        source_name: str | None = None,
+    ) -> Article | None:
         """Parse một RSS entry thành Article.
 
         Nếu RSS summary quá ngắn (< 500 ký tự), tự động kích hoạt
@@ -489,20 +976,17 @@ class RSSNewsFetcher(INewsFetcher):
 
         summary_raw = entry.get("summary", "") or entry.get("description", "") or ""
         summary = self._clean_html(summary_raw)
+        selected_source_name = source_name or self._source_name
 
         # ── Phase 10: Deep Scraper (with Thread-safe Circuit Breaker) ──
         # Nếu RSS summary quá ngắn → bóc tách full-text từ URL gốc
         if len(summary) < _MIN_SUMMARY_THRESHOLD:
             domain = urlparse(link).netloc
 
-            with self._breaker_lock:
-                failures = self._domain_failures[domain]
-
-            if failures >= _CIRCUIT_BREAKER_THRESHOLD:
+            if self._is_domain_breaker_open(domain):
                 logger.info(
-                    "  ⚡ Circuit breaker OPEN cho %s (%d failures), bỏ qua: %s",
+                    "  ⚡ Circuit breaker OPEN cho %s, bỏ qua: %s",
                     domain,
-                    failures,
                     title[:60],
                 )
             else:
@@ -513,19 +997,18 @@ class RSSNewsFetcher(INewsFetcher):
                     title[:60],
                 )
                 full_text = self._fetch_full_text(link)
-                with self._breaker_lock:
-                    if full_text:
-                        summary = full_text
-                        self._domain_failures[domain] = 0
-                    else:
-                        self._domain_failures[domain] += 1
-                        if self._domain_failures[domain] >= _CIRCUIT_BREAKER_THRESHOLD:
-                            logger.warning(
-                                "  ⚡ Circuit breaker TRIPPED cho %s "
-                                "(>= %d failures liên tiếp)",
-                                domain,
-                                _CIRCUIT_BREAKER_THRESHOLD,
-                            )
+                if full_text:
+                    summary = full_text
+                    self._record_domain_success(domain)
+                else:
+                    failures = self._record_domain_failure(domain)
+                    if failures >= _CIRCUIT_BREAKER_THRESHOLD:
+                        logger.warning(
+                            "  ⚡ Circuit breaker TRIPPED cho %s "
+                            "(>= %d failures liên tiếp)",
+                            domain,
+                            _CIRCUIT_BREAKER_THRESHOLD,
+                        )
 
         # Token-based truncation (thay vì char-based)
         summary = _smart_truncate(summary, _MAX_SUMMARY_TOKENS)
@@ -535,7 +1018,72 @@ class RSSNewsFetcher(INewsFetcher):
         return Article(
             title=title,
             summary=summary,
-            source_name=self._source_name,
+            source_name=selected_source_name,
+            published_date=published_date,
+            url=link,
+        )
+
+    async def _parse_entry_async(
+        self,
+        entry: Any,
+        source_name: str,
+        client: httpx.AsyncClient,
+        semaphore: asyncio.Semaphore,
+    ) -> Article | None:
+        """Parse một RSS entry trong async batch mode."""
+        title = entry.get("title", "").strip()
+        link = entry.get("link", "").strip()
+
+        if not title or not link:
+            logger.warning(
+                "Bỏ qua entry thiếu title/link: title=%r, link=%r",
+                title,
+                link,
+            )
+            return None
+
+        summary_raw = entry.get("summary", "") or entry.get("description", "") or ""
+        summary = self._clean_html(summary_raw)
+
+        if len(summary) < _MIN_SUMMARY_THRESHOLD:
+            domain = urlparse(link).netloc
+            if self._is_domain_breaker_open(domain):
+                logger.info(
+                    "  ⚡ Circuit breaker OPEN cho %s, bỏ qua: %s",
+                    domain,
+                    title[:60],
+                )
+            else:
+                logger.info(
+                    "  Teaser detected (%d chars < %d): %s",
+                    len(summary),
+                    _MIN_SUMMARY_THRESHOLD,
+                    title[:60],
+                )
+                full_text = await self._fetch_full_text_async(
+                    url=link,
+                    client=client,
+                    semaphore=semaphore,
+                )
+                if full_text:
+                    summary = full_text
+                    self._record_domain_success(domain)
+                else:
+                    failures = self._record_domain_failure(domain)
+                    if failures >= _CIRCUIT_BREAKER_THRESHOLD:
+                        logger.warning(
+                            "  ⚡ Circuit breaker TRIPPED cho %s "
+                            "(>= %d failures liên tiếp)",
+                            domain,
+                            _CIRCUIT_BREAKER_THRESHOLD,
+                        )
+
+        summary = _smart_truncate(summary, _MAX_SUMMARY_TOKENS)
+        published_date = self._parse_date(entry)
+        return Article(
+            title=title,
+            summary=summary,
+            source_name=source_name,
             published_date=published_date,
             url=link,
         )

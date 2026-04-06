@@ -533,8 +533,14 @@ class TestMCPHttpMemoryManager:
         with patch.object(mgr, "_call_tool") as mock_call:
             mock_call.return_value = {
                 "results": [
-                    {"text": "Bài học #1: Khi Fed hawkish, DXY tăng."},
-                    {"text": "Bài học #2: DXY mạnh gây áp lực lên vàng."},
+                    {
+                        "text": "Bài học #1: Khi Fed hawkish, DXY tăng.",
+                        "similarity": 0.91,
+                    },
+                    {
+                        "text": "Bài học #2: DXY mạnh gây áp lực lên vàng.",
+                        "score": 0.86,
+                    },
                 ]
             }
 

@@ -23,7 +23,9 @@ Phiên bản hiện tại: **v0.0.5**
 | 🥇 **Vàng** | Theo dõi DXY, lợi suất trái phiếu, dòng tiền ETF |
 | ₿ **Crypto** | BTC/ETH, tin pháp lý, dòng tiền tổ chức |
 | 🔄 **Long-term Memory** | Đối chiếu nhận định qua các phiên (File / MCP Server) |
-| 🧹 **Keyword + Dedup Filter** | Lọc từ khóa theo category và khử trùng lặp bằng Jaccard Similarity trước MAP |
+| ⚡ **Safe Async Crawler** | Quét RSS bằng `httpx.AsyncClient` + semaphore/jitter, hạn chế rate-limit |
+| 🧠 **No-Drop Input Policy** | Giữ dữ liệu thô chất lượng cao, ủy quyền lọc nhiễu/dedup cho LLM trong prompt |
+| 💾 **Deep Full-text Cache** | Cache full-text bài báo bằng diskcache, hit URL cũ gần như tức thì |
 | 🔍 **Semantic Memory Retrieval** | Trích hot keywords từ tin mới để gọi MCP `search_memory` lấy bài học liên quan |
 | 🤖 **Đa nền tảng LLM** | Gemini (mặc định), OpenAI, LM Studio |
 | 🔌 **Dual-Protocol MCP** | Custom REST hoặc JSON-RPC SSE bridge chuẩn |
@@ -43,7 +45,7 @@ Clean Architecture + SOLID + Dependency Injection
 ├──────────────────────────────────────────────────────────┤
 │                     core/ (Domain)                       │
 │  entities.py  │  interfaces.py  │  use_cases.py          │
-│  services/article_filter.py      │
+│  services/ (domain helpers)      │
 ├──────────────────────────────────────────────────────────┤
 │                 infrastructure/ (I/O)                    │
 │  config/   │  llm/        │  rss/    │ memory/     │ notify│
@@ -64,7 +66,7 @@ Clean Architecture + SOLID + Dependency Injection
 ### Tổ chức source (đã rà soát)
 
 - `src/chahi/core`: entities + interfaces + use case orchestration.
-- `src/chahi/core/services`: domain services chạy local CPU (keyword filter, dedup, hot keywords).
+- `src/chahi/core/services`: domain helpers (không bắt buộc trong pipeline no-drop).
 - `src/chahi/infrastructure/llm`: provider clients (`gemini`, `openai`, `lm_studio`) + wrappers (`recording`, `capture-only`) + `llm_factory`.
 - `src/chahi/infrastructure/memory`: backends (`file`, `mcp`) + `read_only_memory_manager`.
 - `src/chahi/infrastructure/notifiers`: telegram/discord adapters, manager composite, factory.
@@ -106,10 +108,13 @@ pip install -e ".[dev]"
 | Package | Vai trò |
 |---------|---------|
 | `feedparser` | Parse RSS feeds |
+| `httpx` | Async HTTP client cho batch RSS crawling |
 | `beautifulsoup4` | Xử lý HTML rác trong RSS |
-| `requests` | HTTP client (RSS + MCP) |
+| `requests` | HTTP client sync + MCP |
 | `openai` | Kết nối LM Studio (OpenAI-compatible) + OpenAI API |
 | `google-genai` | Kết nối Google Gemini |
+| `diskcache` | Cache full-text scraper xuống ổ đĩa |
+| `curl-cffi` | Fallback fingerprint browser khi website chặn HTTP 403 |
 | `pyyaml` | Đọc config YAML |
 | `tiktoken` | Đếm token chính xác (LLM budget) |
 | `trafilatura` | Deep Scraper — bóc tách full-text |
