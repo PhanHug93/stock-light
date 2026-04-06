@@ -51,6 +51,17 @@ _MINIMAL_CONFIG = dedent("""\
           type: rss
 """)
 
+_OPENAI_CONFIG = dedent("""\
+    sources:
+      gold:
+        - name: "Kitco"
+          url: "https://www.kitco.com/rss/gold.xml"
+          type: rss
+
+    llm_settings:
+      provider: "openai"
+""")
+
 _NO_SOURCES_CONFIG = dedent("""\
     llm_settings:
       api_base: "http://localhost:1234/v1"
@@ -251,10 +262,40 @@ class TestGetLLMSettings:
         reader = YamlConfigReader(config_path=minimal_config)
         llm = reader.get_llm_settings()
 
-        assert llm.api_base == "http://localhost:1234/v1"
-        assert llm.api_key == "lm-studio"
-        assert llm.model_name == "default"
+        assert llm.provider == "gemini"
+        assert llm.api_base == ""
+        assert llm.api_key == ""
+        assert llm.model_name == "gemini-2.0-flash"
         assert llm.temperature == 0.1
+
+    def test_openai_provider_defaults(self, tmp_path: Path) -> None:
+        """provider=openai phải dùng defaults đúng cho OpenAI."""
+        config = _write_config(tmp_path, _OPENAI_CONFIG)
+        reader = YamlConfigReader(config_path=config)
+        llm = reader.get_llm_settings()
+
+        assert llm.provider == "openai"
+        assert llm.api_base == "https://api.openai.com/v1"
+        assert llm.api_key == ""
+        assert llm.model_name == "gpt-4o-mini"
+
+    def test_provider_is_case_insensitive(self, tmp_path: Path) -> None:
+        """Provider viết hoa/thường lẫn nhau vẫn parse đúng."""
+        config = _write_config(
+            tmp_path,
+            dedent("""\
+                sources:
+                  gold:
+                    - name: "Kitco"
+                      url: "https://www.kitco.com/rss/gold.xml"
+                      type: rss
+                llm_settings:
+                  provider: "OpenAI"
+            """),
+        )
+        reader = YamlConfigReader(config_path=config)
+        llm = reader.get_llm_settings()
+        assert llm.provider == "openai"
 
     def test_immutable(self, valid_config: Path) -> None:
         """LLMSettings phải immutable."""

@@ -9,6 +9,7 @@ Usage:
     python main.py
     python main.py --config path/to/config.yaml
     python main.py --output-dir ./my-reports
+    python main.py --provider openai --api-key "$OPENAI_API_KEY" --model gpt-4o-mini
 """
 
 from __future__ import annotations
@@ -17,9 +18,10 @@ import argparse
 import logging
 import logging.handlers
 import sys
+from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
 
@@ -30,9 +32,30 @@ from chahi.infrastructure.memory.memory_factory import create_memory_manager
 from chahi.infrastructure.notifiers.notifier_factory import create_notification_manager
 from chahi.infrastructure.rss.rss_fetcher import RSSNewsFetcher
 
+if TYPE_CHECKING:
+    from chahi.core.entities import LLMSettings
+
 # ── Constants ────────────────────────────────────────────────
 
 _DEFAULT_OUTPUT_DIR = "./reports"
+_VALID_LLM_PROVIDERS: tuple[str, ...] = ("gemini", "openai", "lm_studio")
+_LLM_PROVIDER_DEFAULTS: dict[str, dict[str, str]] = {
+    "gemini": {
+        "api_base": "",
+        "api_key": "",
+        "model_name": "gemini-2.0-flash",
+    },
+    "openai": {
+        "api_base": "https://api.openai.com/v1",
+        "api_key": "",
+        "model_name": "gpt-4o-mini",
+    },
+    "lm_studio": {
+        "api_base": "http://localhost:1234/v1",
+        "api_key": "lm-studio",
+        "model_name": "default",
+    },
+}
 
 _BANNER = r"""
    _____ _           _    _ _
@@ -143,6 +166,45 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help="Chỉ gửi notification qua Discord.",
+    )
+
+    llm_group = parser.add_argument_group("LLM overrides")
+    llm_group.add_argument(
+        "--provider",
+        choices=_VALID_LLM_PROVIDERS,
+        default=None,
+        help="Override provider: gemini | openai | lm_studio. Mặc định: gemini.",
+    )
+    llm_group.add_argument(
+        "--api-base",
+        type=str,
+        default=None,
+        help="Override API base URL của provider.",
+    )
+    llm_group.add_argument(
+        "--api-key",
+        type=str,
+        default=None,
+        help="Override API key (khuyến nghị dùng env var cho production).",
+    )
+    llm_group.add_argument(
+        "--model",
+        dest="model_name",
+        type=str,
+        default=None,
+        help="Override model name.",
+    )
+    llm_group.add_argument(
+        "--temperature",
+        type=float,
+        default=None,
+        help="Override temperature (0.0 - 2.0).",
+    )
+    llm_group.add_argument(
+        "--timeout",
+        type=int,
+        default=None,
+        help="Override timeout (giây).",
     )
     return parser
 
@@ -276,6 +338,69 @@ def _print_preview(report_content: str) -> None:
     print(f"{'─' * 50}\n")
 
 
+def _apply_llm_cli_overrides(
+    settings: LLMSettings,
+    args: argparse.Namespace,
+) -> LLMSettings:
+    """Áp dụng override LLM settings từ CLI args.
+
+    Quy tắc:
+    - Không truyền flag: dùng nguyên giá trị từ config.
+    - Truyền ``--provider``: reset field phụ thuộc provider về default
+      của provider mới, sau đó apply các flag override cụ thể (nếu có).
+    """
+    provider = args.provider or settings.provider
+    provider_defaults = _LLM_PROVIDER_DEFAULTS.get(
+        provider,
+        _LLM_PROVIDER_DEFAULTS["gemini"],
+    )
+
+    api_base = settings.api_base
+    api_key = settings.api_key
+    model_name = settings.model_name
+
+    if args.provider is not None:
+        api_base = provider_defaults["api_base"]
+        api_key = provider_defaults["api_key"]
+        model_name = provider_defaults["model_name"]
+
+    if args.api_base is not None:
+        api_base = args.api_base
+    if args.api_key is not None:
+        api_key = args.api_key
+    if args.model_name is not None:
+        model_name = args.model_name
+
+    temperature = (
+        args.temperature if args.temperature is not None else settings.temperature
+    )
+    timeout = args.timeout if args.timeout is not None else settings.timeout
+
+    updated = replace(
+        settings,
+        provider=provider,
+        api_base=api_base,
+        api_key=api_key,
+        model_name=model_name,
+        temperature=temperature,
+        timeout=timeout,
+    )
+
+    if updated != settings:
+        logger.info(
+            (
+                "Áp dụng LLM overrides: provider=%s, base=%s, model=%s, "
+                "temp=%.2f, timeout=%ds"
+            ),
+            updated.provider,
+            updated.api_base or "(default)",
+            updated.model_name,
+            updated.temperature,
+            updated.timeout,
+        )
+    return updated
+
+
 def main() -> None:
     """Entry point chính — chạy toàn bộ pipeline."""
     parser = _build_parser()
@@ -332,6 +457,7 @@ def main() -> None:
     try:
         config_reader = YamlConfigReader(config_path=args.config)
         llm_settings = config_reader.get_llm_settings()
+        llm_settings = _apply_llm_cli_overrides(llm_settings, args)
         logger.info("Config loaded: %s", args.config)
     except (FileNotFoundError, ValueError) as exc:
         logger.error("✗ Lỗi config: %s", exc)

@@ -2,6 +2,7 @@
 
 Hỗ trợ nhiều LLM providers với tokenizer riêng:
     - ``gemini``: dùng cl100k_base (conservative, ~tương đương)
+    - ``openai``: dùng cl100k_base (GPT tokenizer chuẩn)
     - ``lm_studio`` (Qwen/local): dùng heuristic Vietnamese-optimized
       vì Qwen có vocab ~151K tokens, tối ưu tiếng Việt hơn GPT-4.
 
@@ -30,6 +31,7 @@ _current_provider: str = "gemini"  # default
 # Heuristic ratios: chars per token (conservative = ít chars/token = over-estimate)
 _HEURISTIC_RATIOS: dict[str, float] = {
     "gemini": 1.7,  # cl100k_base ~1 token / 1.7 chars cho VN
+    "openai": 1.7,  # cl100k_base
     "lm_studio": 2.5,  # Qwen vocab lớn, encode VN hiệu quả hơn
 }
 
@@ -41,7 +43,7 @@ def configure(provider: str = "gemini") -> None:
     Reset encoder cache khi đổi provider.
 
     Args:
-        provider: ``"gemini"`` hoặc ``"lm_studio"``.
+        provider: ``"gemini"``, ``"openai"`` hoặc ``"lm_studio"``.
     """
     global _current_provider, _encoder  # noqa: PLW0603
     if provider != _current_provider:
@@ -57,9 +59,9 @@ def _get_encoder():  # noqa: ANN202
     if _encoder is not None:
         return _encoder
 
-    # Chỉ dùng tiktoken cho Gemini (cl100k_base ~ equivalent)
+    # Chỉ dùng tiktoken cho cloud providers (cl100k_base compatible)
     # Qwen/local LLM: dùng heuristic vì tiktoken không có vocab Qwen
-    if _current_provider != "gemini":
+    if _current_provider not in ("gemini", "openai"):
         return None
 
     try:
@@ -81,7 +83,7 @@ def _get_ratio() -> float:
 def estimate_tokens(text: str) -> int:
     """Ước lượng số tokens cho một chuỗi text.
 
-    - Gemini: dùng tiktoken cl100k_base (chính xác).
+    - Gemini/OpenAI: dùng tiktoken cl100k_base (chính xác).
     - Qwen/local: dùng heuristic ratio (conservative).
 
     Args:
@@ -108,7 +110,7 @@ def truncate_to_token_budget(
 ) -> str:
     """Cắt text sao cho không vượt quá token budget.
 
-    - Gemini (tiktoken): encode → slice → decode (Unicode-safe).
+    - Gemini/OpenAI (tiktoken): encode → slice → decode (Unicode-safe).
     - Qwen/local: heuristic chars + word boundary.
 
     Args:

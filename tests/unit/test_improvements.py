@@ -22,6 +22,7 @@ from chahi.core.interfaces import ILLMClient
 from chahi.infrastructure.llm.gemini_client import GeminiClient
 from chahi.infrastructure.llm.llm_factory import create_llm_client
 from chahi.infrastructure.llm.lm_studio_client import LMStudioClient
+from chahi.infrastructure.llm.openai_client import OpenAIClient
 from chahi.infrastructure.rss.rss_fetcher import RSSNewsFetcher, _smart_truncate
 
 # ─────────────────────────────────────────────────────────────
@@ -121,9 +122,9 @@ class TestLLMSettingsProvider:
     """Tests cho LLMSettings provider field."""
 
     def test_default_provider(self) -> None:
-        """Default provider phải là lm_studio."""
+        """Default provider phải là gemini."""
         settings = LLMSettings()
-        assert settings.provider == "lm_studio"
+        assert settings.provider == "gemini"
 
     def test_gemini_provider(self) -> None:
         """Gemini provider phải hợp lệ."""
@@ -133,6 +134,16 @@ class TestLLMSettingsProvider:
             model_name="gemini-2.0-flash",
         )
         assert settings.provider == "gemini"
+
+    def test_openai_provider(self) -> None:
+        """OpenAI provider phải hợp lệ."""
+        settings = LLMSettings(
+            provider="openai",
+            api_base="https://api.openai.com/v1",
+            api_key="sk-test",
+            model_name="gpt-4o-mini",
+        )
+        assert settings.provider == "openai"
 
     def test_invalid_provider_raises(self) -> None:
         """Provider không hợp lệ phải raise ValueError."""
@@ -156,7 +167,12 @@ class TestLLMFactory:
     @patch("chahi.infrastructure.llm.lm_studio_client.openai.OpenAI")
     def test_creates_lm_studio(self, mock_openai: MagicMock) -> None:
         """provider=lm_studio phải trả về LMStudioClient."""
-        settings = LLMSettings(provider="lm_studio")
+        settings = LLMSettings(
+            provider="lm_studio",
+            api_base="http://localhost:1234/v1",
+            api_key="lm-studio",
+            model_name="default",
+        )
         client = create_llm_client(settings)
         assert isinstance(client, LMStudioClient)
 
@@ -171,6 +187,18 @@ class TestLLMFactory:
         client = create_llm_client(settings)
         assert isinstance(client, GeminiClient)
 
+    @patch("chahi.infrastructure.llm.openai_client.openai.OpenAI")
+    def test_creates_openai(self, mock_openai: MagicMock) -> None:
+        """provider=openai phải trả về OpenAIClient."""
+        settings = LLMSettings(
+            provider="openai",
+            api_base="https://api.openai.com/v1",
+            api_key="sk-test",
+            model_name="gpt-4o-mini",
+        )
+        client = create_llm_client(settings)
+        assert isinstance(client, OpenAIClient)
+
     def test_invalid_provider_raises(self) -> None:
         """Provider không hỗ trợ phải raise ValueError."""
         # Bypass LLMSettings validation bằng object.__setattr__
@@ -182,7 +210,12 @@ class TestLLMFactory:
     @patch("chahi.infrastructure.llm.lm_studio_client.openai.OpenAI")
     def test_returns_ilm_client(self, mock_openai: MagicMock) -> None:
         """Factory phải trả về instance của ILLMClient."""
-        settings = LLMSettings(provider="lm_studio")
+        settings = LLMSettings(
+            provider="lm_studio",
+            api_base="http://localhost:1234/v1",
+            api_key="lm-studio",
+            model_name="default",
+        )
         client = create_llm_client(settings)
         assert isinstance(client, ILLMClient)
 
