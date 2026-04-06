@@ -24,7 +24,7 @@ import random
 import re
 import socket
 import threading
-from collections import defaultdict
+import time
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
@@ -44,7 +44,14 @@ from urllib3.util.retry import Retry
 from chahi.core.entities import Article
 from chahi.core.interfaces import INewsFetcher
 from chahi.infrastructure.llm.token_counter import truncate_to_token_budget
+from chahi.infrastructure.rss.circuit_breaker import BreakerState, DomainCircuitBreaker
 from chahi.infrastructure.rss.rss_cache import RSSCache
+from chahi.infrastructure.rss.scraper_policy import (
+    canonicalize_url,
+    is_allowed_by_policy,
+    is_google_news_url,
+    score_relevancy,
+)
 
 if TYPE_CHECKING:
     from chahi.core.entities import SourceCategory, SourceConfig
@@ -64,12 +71,21 @@ _USER_AGENT: str = "ChaHi/0.0.5 RSS Fetcher (+https://github.com/chahi)"
 _MAX_RETRIES: int = 2  # retry cho 5xx errors
 _CPU_WORKERS: int = 2  # ProcessPool workers cho trafilatura
 _CIRCUIT_BREAKER_THRESHOLD: int = 2  # Sau N failures liên tiếp → ngắt domain
+_CIRCUIT_BREAKER_OPEN_TTL_SECONDS: float = 900.0
 _MAX_REDIRECTS: int = 5  # Tối đa redirect hops (chống SSRF)
-_ASYNC_MAX_CONNECTIONS: int = 20  # Giới hạn kết nối đồng thời an toàn
-_ASYNC_JITTER_MIN: float = 0.05
-_ASYNC_JITTER_MAX: float = 0.20
+_ASYNC_MAX_CONNECTIONS: int = 15  # Global semaphore
+_ASYNC_JITTER_MIN: float = 0.5  # Per-domain delay min (seconds)
+_ASYNC_JITTER_MAX: float = 2.5  # Per-domain delay max (seconds)
+_ASYNC_CONNECT_TIMEOUT: float = 5.0
+_ASYNC_READ_TIMEOUT: float = 15.0
+_ASYNC_WRITE_TIMEOUT: float = 5.0
+_ASYNC_POOL_TIMEOUT: float = 5.0
+_ASYNC_MAX_RETRIES: int = 3
 _FULL_TEXT_CACHE_DIR = Path(".cache/fulltext")
-_RETRYABLE_STATUS_CODES: set[int] = {429, 502, 503, 504}
+_ASYNC_RETRYABLE_STATUS_CODES: set[int] = {429, 502, 503}
+_DEEP_SCRAPE_MAX_PER_FEED: int = 8
+_GOOGLE_RESOLVE_TIMEOUT_SECONDS: int = 6
+_NUMERIC_TOKEN_RE = re.compile(r"[+-]?\d+(?:[.,]\d+)?%?")
 
 
 # ── Helper functions ────────────────────────────────────────
@@ -238,6 +254,8 @@ def _trafilatura_extract(html: str) -> str | None:
     Hàm module-level để có thể pickle → chạy trong ProcessPool.
     trafilatura.extract() là CPU-bound (phân tích cây HTML).
 
+    Quality Gate: include_tables=True để không mất bảng số liệu.
+
     Args:
         html: HTML content cần extract.
 
@@ -245,9 +263,28 @@ def _trafilatura_extract(html: str) -> str | None:
         Text đã extract, hoặc None nếu thất bại.
     """
     try:
-        return trafilatura.extract(html)
+        text = trafilatura.extract(html, include_tables=True)
+        if not text:
+            return None
+        # Quality Gate:
+        # - Giữ nội dung dài bình thường.
+        # - Với nội dung ngắn, chỉ drop khi thực sự nghèo thông tin.
+        if len(text) < 150 and not _looks_like_quant_data(text):
+            return None
+        return text
     except Exception:  # noqa: BLE001
         return None
+
+
+def _looks_like_quant_data(text: str) -> bool:
+    """Heuristic phát hiện nội dung bảng/số liệu ngắn nhưng có giá trị."""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if len(lines) < 2:
+        return False
+
+    numeric_hits = len(_NUMERIC_TOKEN_RE.findall(text))
+    table_markers = text.count("|") + text.count("\t")
+    return numeric_hits >= 6 or (table_markers >= 4 and numeric_hits >= 2)
 
 
 class RSSNewsFetcher(INewsFetcher):
@@ -279,9 +316,12 @@ class RSSNewsFetcher(INewsFetcher):
             max_workers=_CPU_WORKERS,
             max_tasks=50,  # Recycle workers sau 50 tasks → tránh lxml memory leak
         )
-        # Circuit breaker: domain → số failures liên tiếp (thread-safe)
-        self._domain_failures: dict[str, int] = defaultdict(int)
-        self._breaker_lock = threading.Lock()
+        self._domain_breaker = DomainCircuitBreaker(
+            failure_threshold=_CIRCUIT_BREAKER_THRESHOLD,
+            open_ttl=_CIRCUIT_BREAKER_OPEN_TTL_SECONDS,
+        )
+        self._domain_delay_lock = threading.Lock()
+        self._domain_next_allowed_at: dict[str, float] = {}
         self._fulltext_cache: Any | None = None
         try:
             from diskcache import Cache  # type: ignore[import-not-found]
@@ -334,9 +374,13 @@ class RSSNewsFetcher(INewsFetcher):
         # ── Bước 3: Map entries -> Articles ──
         articles: list[Article] = []
         entries = feed.entries[:limit]
+        deep_scrape_budget = self._select_deep_scrape_links(entries)
 
         for entry in entries:
-            article = self._parse_entry(entry)
+            article = self._parse_entry(
+                entry,
+                allow_deep_scrape=self._entry_link(entry) in deep_scrape_budget,
+            )
             if article is not None:
                 articles.append(article)
 
@@ -405,7 +449,12 @@ class RSSNewsFetcher(INewsFetcher):
             max_connections=_ASYNC_MAX_CONNECTIONS,
             max_keepalive_connections=_ASYNC_MAX_CONNECTIONS,
         )
-        timeout = httpx.Timeout(self._timeout)
+        timeout = httpx.Timeout(
+            connect=_ASYNC_CONNECT_TIMEOUT,
+            read=_ASYNC_READ_TIMEOUT,
+            write=_ASYNC_WRITE_TIMEOUT,
+            pool=_ASYNC_POOL_TIMEOUT,
+        )
 
         result: dict[SourceCategory, list[Article]] = {}
         async with httpx.AsyncClient(
@@ -486,12 +535,14 @@ class RSSNewsFetcher(INewsFetcher):
             )
 
         entries = feed.entries[:limit]
+        deep_scrape_budget = self._select_deep_scrape_links(entries)
         coros = [
             self._parse_entry_async(
                 entry=entry,
                 source_name=source_name,
                 client=client,
                 semaphore=semaphore,
+                allow_deep_scrape=self._entry_link(entry) in deep_scrape_budget,
             )
             for entry in entries
         ]
@@ -622,39 +673,46 @@ class RSSNewsFetcher(INewsFetcher):
         semaphore: asyncio.Semaphore,
         url: str,
         headers: dict[str, str] | None = None,
+        method: str = "GET",
     ) -> httpx.Response:
-        """Async GET với retry/backoff cho lỗi mạng và status retryable."""
-        for attempt in range(_MAX_RETRIES + 1):
+        """Async request với retry/backoff cho lỗi mạng và status retryable."""
+        for attempt in range(_ASYNC_MAX_RETRIES + 1):
             try:
                 response = await self._safe_get_async(
                     client=client,
                     semaphore=semaphore,
                     url=url,
                     headers=headers,
+                    method=method,
                 )
             except httpx.TimeoutException as exc:
-                if attempt >= _MAX_RETRIES:
+                if attempt >= _ASYNC_MAX_RETRIES:
                     raise ConnectionError(
-                        f"HTTP timeout sau {self._timeout}s: {url}"
+                        f"HTTP {method} timeout "
+                        f"(connect={_ASYNC_CONNECT_TIMEOUT}s/"
+                        f"read={_ASYNC_READ_TIMEOUT}s): {url}"
                     ) from exc
-                await self._sleep_with_backoff(attempt)
+                await self._sleep_with_backoff(attempt=attempt)
                 continue
             except httpx.RequestError as exc:
-                if attempt >= _MAX_RETRIES:
+                if attempt >= _ASYNC_MAX_RETRIES:
                     raise ConnectionError(
-                        f"Không thể kết nối tới URL: {url}. Lỗi: {exc}"
+                        f"Không thể kết nối tới URL ({method}): {url}. Lỗi: {exc}"
                     ) from exc
-                await self._sleep_with_backoff(attempt)
+                await self._sleep_with_backoff(attempt=attempt)
                 continue
 
             if (
-                response.status_code in _RETRYABLE_STATUS_CODES
-                and attempt < _MAX_RETRIES
+                response.status_code in _ASYNC_RETRYABLE_STATUS_CODES
+                and attempt < _ASYNC_MAX_RETRIES
             ):
                 retry_after = self._parse_retry_after(
                     response.headers.get("Retry-After")
                 )
-                await self._sleep_with_backoff(attempt, retry_after=retry_after)
+                await self._sleep_with_backoff(
+                    attempt=attempt,
+                    retry_after=retry_after,
+                )
                 continue
 
             return response
@@ -667,19 +725,21 @@ class RSSNewsFetcher(INewsFetcher):
         semaphore: asyncio.Semaphore,
         url: str,
         headers: dict[str, str] | None = None,
+        method: str = "GET",
     ) -> httpx.Response:
-        """HTTP GET async với manual redirect + SSRF validation."""
+        """HTTP request async với manual redirect + SSRF validation."""
         parsed = urlparse(url)
         if _is_ssrf_target(parsed.hostname or ""):
             raise ConnectionError(f"SSRF blocked: {url} resolves to private IP")
 
         current_url = url
         for _ in range(_MAX_REDIRECTS):
-            response = await self._throttled_get_async(
+            response = await self._throttled_request_async(
                 client=client,
                 semaphore=semaphore,
                 url=current_url,
                 headers=headers,
+                method=method,
             )
 
             if response.status_code not in (301, 302, 303, 307, 308):
@@ -707,29 +767,48 @@ class RSSNewsFetcher(INewsFetcher):
 
         raise ConnectionError(f"Quá nhiều redirects (>{_MAX_REDIRECTS}) cho: {url}")
 
-    async def _throttled_get_async(
+    async def _throttled_request_async(
         self,
         client: httpx.AsyncClient,
         semaphore: asyncio.Semaphore,
         url: str,
         headers: dict[str, str] | None = None,
+        method: str = "GET",
     ) -> httpx.Response:
-        """GET request bọc semaphore + jitter delay để giảm burst."""
+        """HTTP request bọc semaphore + jitter delay để giảm burst."""
+        await self._wait_for_domain_jitter(url)
         async with semaphore:
-            await asyncio.sleep(random.uniform(_ASYNC_JITTER_MIN, _ASYNC_JITTER_MAX))
-            return await client.get(
+            return await client.request(
+                method,
                 url,
                 headers=headers,
                 follow_redirects=False,
             )
 
     async def _sleep_with_backoff(self, attempt: int, retry_after: float = 0.0) -> None:
-        """Sleep exponential backoff + jitter cho retry loop."""
-        backoff = 0.5 * (2**attempt)
-        delay = max(backoff, retry_after) + random.uniform(
-            _ASYNC_JITTER_MIN, _ASYNC_JITTER_MAX
-        )
+        """Sleep retry theo backoff 2/4/8 giây, tôn trọng Retry-After."""
+        backoff = float(2 ** (attempt + 1))
+        delay = max(backoff, retry_after)
         await asyncio.sleep(delay)
+
+    async def _wait_for_domain_jitter(self, url: str) -> None:
+        """Áp dụng giãn cách request theo domain để tránh bot-detection burst."""
+        host = (urlparse(url).hostname or "").lower()
+        if not host:
+            await asyncio.sleep(random.uniform(_ASYNC_JITTER_MIN, _ASYNC_JITTER_MAX))
+            return
+
+        delay = random.uniform(_ASYNC_JITTER_MIN, _ASYNC_JITTER_MAX)
+        now = time.monotonic()
+
+        with self._domain_delay_lock:
+            next_allowed = self._domain_next_allowed_at.get(host, now)
+            scheduled_at = max(now, next_allowed)
+            self._domain_next_allowed_at[host] = scheduled_at + delay
+
+        wait_for = max(0.0, scheduled_at - now)
+        if wait_for > 0:
+            await asyncio.sleep(wait_for)
 
     @staticmethod
     def _parse_retry_after(value: str | None) -> float:
@@ -846,14 +925,56 @@ class RSSNewsFetcher(INewsFetcher):
             await asyncio.to_thread(self._set_cached_full_text, url, text)
         return text
 
+    def _fetch_full_text_half_open_probe(self, url: str) -> str | None:
+        """Probe deep scrape khi breaker ở HALF_OPEN: ưu tiên curl_cffi."""
+        cached = self._get_cached_full_text(url)
+        if cached is not None:
+            return cached
+
+        html_text = self._fetch_html_with_curl_cffi(url)
+        if not html_text:
+            return None
+
+        text = self._extract_full_text_with_pool(html_text, url)
+        if text is not None:
+            self._set_cached_full_text(url, text)
+        return text
+
+    async def _fetch_full_text_half_open_probe_async(
+        self,
+        url: str,
+        client: httpx.AsyncClient,
+        semaphore: asyncio.Semaphore,
+    ) -> str | None:
+        """Probe deep scrape khi breaker ở HALF_OPEN: ưu tiên curl_cffi."""
+        cached = await asyncio.to_thread(self._get_cached_full_text, url)
+        if cached is not None:
+            return cached
+
+        html_text = await self._fetch_html_with_curl_cffi_async(
+            url=url,
+            semaphore=semaphore,
+        )
+        if not html_text:
+            return None
+
+        text = await asyncio.to_thread(
+            self._extract_full_text_with_pool,
+            html_text,
+            url,
+        )
+        if text is not None:
+            await asyncio.to_thread(self._set_cached_full_text, url, text)
+        return text
+
     async def _fetch_html_with_curl_cffi_async(
         self,
         url: str,
         semaphore: asyncio.Semaphore,
     ) -> str | None:
         """Run curl_cffi fallback trong thread để không chặn event loop."""
+        await self._wait_for_domain_jitter(url)
         async with semaphore:
-            await asyncio.sleep(random.uniform(_ASYNC_JITTER_MIN, _ASYNC_JITTER_MAX))
             return await asyncio.to_thread(self._fetch_html_with_curl_cffi, url)
 
     def _fetch_html_with_curl_cffi(self, url: str) -> str | None:
@@ -876,7 +997,7 @@ class RSSNewsFetcher(INewsFetcher):
             response = curl_cffi_requests.get(
                 url,
                 timeout=self._timeout,
-                impersonate="chrome124",
+                impersonate="chrome120",
             )
             response.raise_for_status()
             return str(response.text)
@@ -912,10 +1033,11 @@ class RSSNewsFetcher(INewsFetcher):
         """Đọc full-text cache từ diskcache nếu có."""
         if self._fulltext_cache is None:
             return None
+        cache_key = self._canonical_cache_key(url)
         try:
-            cached = self._fulltext_cache.get(url)
+            cached = self._fulltext_cache.get(cache_key)
         except Exception:  # noqa: BLE001
-            logger.debug("  Lỗi đọc diskcache fulltext: %s", url, exc_info=True)
+            logger.debug("  Lỗi đọc diskcache fulltext: %s", cache_key, exc_info=True)
             return None
         if isinstance(cached, str) and cached.strip():
             return cached.strip()
@@ -925,23 +1047,152 @@ class RSSNewsFetcher(INewsFetcher):
         """Ghi full-text vào diskcache để tái sử dụng cho lần chạy sau."""
         if self._fulltext_cache is None or not text.strip():
             return
+        cache_key = self._canonical_cache_key(url)
         try:
-            self._fulltext_cache.set(url, text.strip())
+            self._fulltext_cache.set(cache_key, text.strip())
         except Exception:  # noqa: BLE001
-            logger.debug("  Lỗi ghi diskcache fulltext: %s", url, exc_info=True)
+            logger.debug("  Lỗi ghi diskcache fulltext: %s", cache_key, exc_info=True)
 
-    def _is_domain_breaker_open(self, domain: str) -> bool:
-        with self._breaker_lock:
-            return self._domain_failures[domain] >= _CIRCUIT_BREAKER_THRESHOLD
+    @staticmethod
+    def _canonical_cache_key(url: str) -> str:
+        """Tạo cache key ổn định cho full-text."""
+        return canonicalize_url(url)
+
+    def _get_domain_breaker_state(self, domain: str) -> BreakerState:
+        return self._domain_breaker.get_state(domain)
 
     def _record_domain_success(self, domain: str) -> None:
-        with self._breaker_lock:
-            self._domain_failures[domain] = 0
+        self._domain_breaker.record_success(domain)
 
-    def _record_domain_failure(self, domain: str) -> int:
-        with self._breaker_lock:
-            self._domain_failures[domain] += 1
-            return self._domain_failures[domain]
+    def _record_domain_failure(self, domain: str) -> BreakerState:
+        return self._domain_breaker.record_failure(domain)
+
+    @staticmethod
+    def _entry_link(entry: Any) -> str:
+        return str(entry.get("link", "")).strip()
+
+    def _select_deep_scrape_links(self, entries: list[Any]) -> set[str]:
+        """Chọn link được phép deep scrape theo semantic+recency budgeting."""
+        if not entries:
+            return set()
+
+        now_utc = datetime.now(tz=UTC)
+        candidates: list[tuple[int, datetime, str]] = []
+        for entry in entries:
+            title = str(entry.get("title", "")).strip()
+            link = self._entry_link(entry)
+            if not title or not link:
+                continue
+
+            summary_raw = entry.get("summary", "") or entry.get("description", "") or ""
+            summary = self._clean_html(summary_raw)
+            score = score_relevancy(title, summary)
+            published_date = self._parse_date(entry)
+            if published_date.tzinfo is None:
+                published_date = published_date.replace(tzinfo=UTC)
+            age_seconds = max(
+                0.0,
+                (now_utc - published_date.astimezone(UTC)).total_seconds(),
+            )
+
+            # Recency bonus: ưu tiên bài mới trong 72h gần nhất.
+            if age_seconds <= 6 * 3600:
+                score += 20
+            elif age_seconds <= 24 * 3600:
+                score += 12
+            elif age_seconds <= 72 * 3600:
+                score += 6
+
+            if len(summary) < _MIN_SUMMARY_THRESHOLD:
+                score += 5
+
+            candidates.append((score, published_date, link))
+
+        if not candidates:
+            return set()
+
+        candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        budget = min(_DEEP_SCRAPE_MAX_PER_FEED, len(candidates))
+        selected = {
+            link for score, _, link in candidates[:budget] if score > 0 or budget <= 2
+        }
+
+        if not selected:
+            # fallback tối thiểu: giữ 2 bài mới nhất để không bỏ sót coverage.
+            selected = {link for _, _, link in candidates[:2]}
+
+        logger.debug(
+            "  Deep scrape budget selected %d/%d links",
+            len(selected),
+            len(candidates),
+        )
+        return selected
+
+    def _resolve_google_news_url(self, url: str) -> str:
+        """Resolve Google News RSS redirect sang URL gốc (sync)."""
+        if not is_google_news_url(url):
+            return url
+
+        try:
+            response = _safe_get(
+                self._session,
+                url,
+                timeout=min(self._timeout, _GOOGLE_RESOLVE_TIMEOUT_SECONDS),
+                stream=True,
+            )
+            resolved = str(response.url or url)
+            response.close()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("  Resolve Google News thất bại: %s (%s)", url, exc)
+            return url
+
+        if not resolved:
+            return url
+        parsed = urlparse(resolved)
+        host = parsed.hostname or ""
+        if parsed.scheme in ("http", "https") and not _is_ssrf_target(host):
+            logger.debug("  Google redirect resolved: %s -> %s", url, resolved)
+            return resolved
+        return url
+
+    async def _resolve_google_news_url_async(
+        self,
+        url: str,
+        client: httpx.AsyncClient,
+        semaphore: asyncio.Semaphore,
+    ) -> str:
+        """Resolve Google News RSS redirect sang URL gốc (async)."""
+        if not is_google_news_url(url):
+            return url
+
+        try:
+            response = await self._safe_get_with_retries_async(
+                client=client,
+                semaphore=semaphore,
+                url=url,
+                method="HEAD",
+            )
+            resolved = str(response.url or url)
+            if response.status_code in (405, 501):
+                response = await self._safe_get_with_retries_async(
+                    client=client,
+                    semaphore=semaphore,
+                    url=url,
+                    method="GET",
+                )
+                resolved = str(response.url or url)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("  Resolve Google News async thất bại: %s (%s)", url, exc)
+            return url
+
+        if not resolved:
+            return url
+        parsed = urlparse(resolved)
+        host = parsed.hostname or ""
+        if parsed.scheme in ("http", "https") and not _is_ssrf_target(host):
+            logger.debug("  Google redirect resolved async: %s -> %s", url, resolved)
+            return resolved
+        return url
 
     # ── Private: Entry Parsing ──────────────────────────────
 
@@ -949,6 +1200,7 @@ class RSSNewsFetcher(INewsFetcher):
         self,
         entry: Any,
         source_name: str | None = None,
+        allow_deep_scrape: bool = True,
     ) -> Article | None:
         """Parse một RSS entry thành Article.
 
@@ -974,19 +1226,25 @@ class RSSNewsFetcher(INewsFetcher):
             )
             return None
 
+        resolved_link = self._resolve_google_news_url(link)
         summary_raw = entry.get("summary", "") or entry.get("description", "") or ""
         summary = self._clean_html(summary_raw)
         selected_source_name = source_name or self._source_name
 
-        # ── Phase 10: Deep Scraper (with Thread-safe Circuit Breaker) ──
-        # Nếu RSS summary quá ngắn → bóc tách full-text từ URL gốc
-        if len(summary) < _MIN_SUMMARY_THRESHOLD:
-            domain = urlparse(link).netloc
+        if (
+            allow_deep_scrape
+            and len(summary) < _MIN_SUMMARY_THRESHOLD
+            and is_allowed_by_policy(resolved_link)
+        ):
+            domain = (urlparse(resolved_link).hostname or "").lower()
+            state = self._get_domain_breaker_state(domain)
 
-            if self._is_domain_breaker_open(domain):
+            if state == BreakerState.OPEN:
+                remaining = self._domain_breaker.get_open_remaining(domain)
                 logger.info(
-                    "  ⚡ Circuit breaker OPEN cho %s, bỏ qua: %s",
+                    "  ⚡ Circuit breaker OPEN cho %s (%.0fs còn lại), bỏ qua: %s",
                     domain,
+                    remaining,
                     title[:60],
                 )
             else:
@@ -996,13 +1254,18 @@ class RSSNewsFetcher(INewsFetcher):
                     _MIN_SUMMARY_THRESHOLD,
                     title[:60],
                 )
-                full_text = self._fetch_full_text(link)
+                if state == BreakerState.HALF_OPEN:
+                    logger.info("  HALF_OPEN probe bằng curl_cffi cho %s", domain)
+                    full_text = self._fetch_full_text_half_open_probe(resolved_link)
+                else:
+                    full_text = self._fetch_full_text(resolved_link)
+
                 if full_text:
                     summary = full_text
                     self._record_domain_success(domain)
                 else:
-                    failures = self._record_domain_failure(domain)
-                    if failures >= _CIRCUIT_BREAKER_THRESHOLD:
+                    next_state = self._record_domain_failure(domain)
+                    if next_state == BreakerState.OPEN:
                         logger.warning(
                             "  ⚡ Circuit breaker TRIPPED cho %s "
                             "(>= %d failures liên tiếp)",
@@ -1020,7 +1283,7 @@ class RSSNewsFetcher(INewsFetcher):
             summary=summary,
             source_name=selected_source_name,
             published_date=published_date,
-            url=link,
+            url=resolved_link,
         )
 
     async def _parse_entry_async(
@@ -1029,6 +1292,7 @@ class RSSNewsFetcher(INewsFetcher):
         source_name: str,
         client: httpx.AsyncClient,
         semaphore: asyncio.Semaphore,
+        allow_deep_scrape: bool = True,
     ) -> Article | None:
         """Parse một RSS entry trong async batch mode."""
         title = entry.get("title", "").strip()
@@ -1042,15 +1306,27 @@ class RSSNewsFetcher(INewsFetcher):
             )
             return None
 
+        resolved_link = await self._resolve_google_news_url_async(
+            url=link,
+            client=client,
+            semaphore=semaphore,
+        )
         summary_raw = entry.get("summary", "") or entry.get("description", "") or ""
         summary = self._clean_html(summary_raw)
 
-        if len(summary) < _MIN_SUMMARY_THRESHOLD:
-            domain = urlparse(link).netloc
-            if self._is_domain_breaker_open(domain):
+        if (
+            allow_deep_scrape
+            and len(summary) < _MIN_SUMMARY_THRESHOLD
+            and is_allowed_by_policy(resolved_link)
+        ):
+            domain = (urlparse(resolved_link).hostname or "").lower()
+            state = self._get_domain_breaker_state(domain)
+            if state == BreakerState.OPEN:
+                remaining = self._domain_breaker.get_open_remaining(domain)
                 logger.info(
-                    "  ⚡ Circuit breaker OPEN cho %s, bỏ qua: %s",
+                    "  ⚡ Circuit breaker OPEN cho %s (%.0fs còn lại), bỏ qua: %s",
                     domain,
+                    remaining,
                     title[:60],
                 )
             else:
@@ -1060,17 +1336,25 @@ class RSSNewsFetcher(INewsFetcher):
                     _MIN_SUMMARY_THRESHOLD,
                     title[:60],
                 )
-                full_text = await self._fetch_full_text_async(
-                    url=link,
-                    client=client,
-                    semaphore=semaphore,
-                )
+                if state == BreakerState.HALF_OPEN:
+                    logger.info("  HALF_OPEN probe bằng curl_cffi cho %s", domain)
+                    full_text = await self._fetch_full_text_half_open_probe_async(
+                        url=resolved_link,
+                        client=client,
+                        semaphore=semaphore,
+                    )
+                else:
+                    full_text = await self._fetch_full_text_async(
+                        url=resolved_link,
+                        client=client,
+                        semaphore=semaphore,
+                    )
                 if full_text:
                     summary = full_text
                     self._record_domain_success(domain)
                 else:
-                    failures = self._record_domain_failure(domain)
-                    if failures >= _CIRCUIT_BREAKER_THRESHOLD:
+                    next_state = self._record_domain_failure(domain)
+                    if next_state == BreakerState.OPEN:
                         logger.warning(
                             "  ⚡ Circuit breaker TRIPPED cho %s "
                             "(>= %d failures liên tiếp)",
@@ -1085,7 +1369,7 @@ class RSSNewsFetcher(INewsFetcher):
             summary=summary,
             source_name=source_name,
             published_date=published_date,
-            url=link,
+            url=resolved_link,
         )
 
     # ── Private: HTML Cleaning ──────────────────────────────

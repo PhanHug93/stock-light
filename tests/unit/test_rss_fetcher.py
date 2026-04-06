@@ -17,7 +17,9 @@ import pytest
 import requests
 
 from chahi.core.entities import Article, SourceCategory, SourceConfig
-from chahi.infrastructure.rss.rss_fetcher import RSSNewsFetcher
+from chahi.infrastructure.rss import rss_fetcher as rss_fetcher_module
+from chahi.infrastructure.rss.circuit_breaker import BreakerState
+from chahi.infrastructure.rss.rss_fetcher import RSSNewsFetcher, _trafilatura_extract
 
 # ─────────────────────────────────────────────────────────────
 # Helpers
@@ -655,3 +657,112 @@ class TestDeepScraper:
         assert len(articles) == 1
         # Should fallback to original short summary
         assert articles[0].summary == short_summary
+
+
+# ─────────────────────────────────────────────────────────────
+# Crawler Policy & Circuit Breaker Enhancements
+# ─────────────────────────────────────────────────────────────
+
+
+class TestCrawlerEnhancements:
+    """Tests cho gói cải tiến crawler R2."""
+
+    @patch("chahi.infrastructure.rss.rss_fetcher._build_session")
+    def test_cache_fulltext_uses_canonicalized_url(self, mock_session_fn: Any) -> None:
+        mock_session_fn.return_value = MagicMock()
+        fetcher = RSSNewsFetcher(source_name="Test")
+        cache_mock = MagicMock()
+        fetcher._fulltext_cache = cache_mock
+
+        url = "https://example.com/news?id=123&utm_source=rss&fbclid=abc"
+        fetcher._set_cached_full_text(url, "full text")
+        fetcher._get_cached_full_text(url)
+
+        expected_key = "https://example.com/news?id=123"
+        cache_mock.set.assert_called_once_with(expected_key, "full text")
+        cache_mock.get.assert_called_once_with(expected_key)
+
+    @patch("chahi.infrastructure.rss.rss_fetcher._build_session")
+    def test_parse_entry_resolves_google_news_redirect(
+        self,
+        mock_session_fn: Any,
+    ) -> None:
+        mock_session_fn.return_value = MagicMock()
+        fetcher = RSSNewsFetcher(source_name="Test")
+        fetcher._resolve_google_news_url = MagicMock(  # type: ignore[method-assign]
+            return_value="https://forbes.com/article-1"
+        )
+
+        entry = _make_entry(
+            title="Fed giữ lãi suất",
+            link="https://news.google.com/rss/articles/CBMi...",
+            summary="A" * 800,
+        )
+
+        article = fetcher._parse_entry(entry)
+        assert article is not None
+        assert article.url == "https://forbes.com/article-1"
+
+    @patch("chahi.infrastructure.rss.rss_fetcher._build_session")
+    def test_half_open_probe_prefers_curl_cffi(
+        self,
+        mock_session_fn: Any,
+    ) -> None:
+        mock_session_fn.return_value = MagicMock()
+        fetcher = RSSNewsFetcher(source_name="Test")
+        fetcher._get_domain_breaker_state = MagicMock(  # type: ignore[method-assign]
+            return_value=BreakerState.HALF_OPEN
+        )
+        fetcher._fetch_full_text_half_open_probe = MagicMock(  # type: ignore[method-assign]
+            return_value="full text from curl"
+        )
+        fetcher._fetch_full_text = MagicMock(return_value=None)
+
+        entry = _make_entry(
+            title="Fed decision",
+            link="https://example.com/fed",
+            summary="short teaser",
+        )
+
+        article = fetcher._parse_entry(entry, allow_deep_scrape=True)
+        assert article is not None
+        assert "full text from curl" in article.summary
+        fetcher._fetch_full_text_half_open_probe.assert_called_once()
+        fetcher._fetch_full_text.assert_not_called()
+
+    @patch("chahi.infrastructure.rss.rss_fetcher._build_session")
+    def test_deep_scrape_budget_prioritizes_semantic_score(
+        self,
+        mock_session_fn: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        mock_session_fn.return_value = MagicMock()
+        fetcher = RSSNewsFetcher(source_name="Test")
+        monkeypatch.setattr(rss_fetcher_module, "_DEEP_SCRAPE_MAX_PER_FEED", 1)
+
+        hot = _make_entry(
+            title="DXY tăng mạnh sau họp Fed",
+            link="https://example.com/hot",
+            summary="Fed và DXY tác động mạnh lên dầu brent",
+        )
+        cold = _make_entry(
+            title="Local sports news",
+            link="https://example.com/cold",
+            summary="Tin tổng hợp đời sống",
+        )
+
+        selected = fetcher._select_deep_scrape_links([cold, hot])
+        assert selected == {"https://example.com/hot"}
+
+
+class TestTrafilaturaQualityGate:
+    """Tests cho quality gate giữ lại dữ liệu bảng/ngữ cảnh định lượng."""
+
+    @patch("chahi.infrastructure.rss.rss_fetcher.trafilatura.extract")
+    def test_accepts_short_quant_table_content(self, mock_extract: Any) -> None:
+        mock_extract.return_value = (
+            "API Crude Oil Stocks | Actual 3.1M | Forecast -0.5M\n"
+            "Gasoline | Actual 1.8M | Forecast 0.2M"
+        )
+        result = _trafilatura_extract("<html>table</html>")
+        assert result is not None
