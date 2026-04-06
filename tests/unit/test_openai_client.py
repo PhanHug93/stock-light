@@ -61,8 +61,13 @@ class TestOpenAIClientAnalyze:
         assert client.supports_concurrency is False
 
     @patch("chahi.infrastructure.llm.openai_client.openai.OpenAI")
-    def test_empty_api_key_uses_env_fallback(self, mock_openai_cls: MagicMock) -> None:
-        """api_key rỗng phải để OpenAI SDK fallback sang env var."""
+    def test_empty_api_key_uses_env_fallback(
+        self,
+        mock_openai_cls: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """api_key rỗng phải fallback sang OPENAI_API_KEY."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-from-env")
         empty_key_settings = LLMSettings(
             provider="openai",
             api_base="https://api.openai.com/v1",
@@ -72,10 +77,29 @@ class TestOpenAIClientAnalyze:
         OpenAIClient(settings=empty_key_settings)
 
         mock_openai_cls.assert_called_once_with(
-            api_key=None,
+            api_key="sk-from-env",
             base_url="https://api.openai.com/v1",
             timeout=120,
         )
+
+    @patch("chahi.infrastructure.llm.openai_client.openai.OpenAI")
+    def test_missing_api_key_raises_value_error(
+        self,
+        mock_openai_cls: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Thiếu cả api_key lẫn env var phải raise ValueError rõ ràng."""
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        empty_key_settings = LLMSettings(
+            provider="openai",
+            api_base="https://api.openai.com/v1",
+            api_key="",
+            model_name="gpt-5.4",
+        )
+
+        with pytest.raises(ValueError, match="Thiếu OpenAI API key"):
+            OpenAIClient(settings=empty_key_settings)
+        mock_openai_cls.assert_not_called()
 
     @patch("chahi.infrastructure.llm.openai_client.openai.OpenAI")
     def test_returns_content(
