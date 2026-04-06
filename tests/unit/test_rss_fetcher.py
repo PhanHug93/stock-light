@@ -6,15 +6,17 @@ không cần kết nối internet khi test.
 
 from __future__ import annotations
 
+import asyncio
 import time
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import requests
 
-from chahi.core.entities import Article
+from chahi.core.entities import Article, SourceCategory, SourceConfig
 from chahi.infrastructure.rss.rss_fetcher import RSSNewsFetcher
 
 # ─────────────────────────────────────────────────────────────
@@ -67,6 +69,17 @@ def _make_http_response(
     if status >= 400:
         resp.raise_for_status.side_effect = requests.HTTPError(f"HTTP {status}")
     return resp
+
+
+def _make_article(title: str, source_name: str) -> Article:
+    """Tạo Article hợp lệ cho tests batch."""
+    return Article(
+        title=title,
+        summary="Nội dung tóm tắt",
+        source_name=source_name,
+        published_date=datetime(2026, 3, 18, 10, 0, tzinfo=UTC),
+        url=f"https://example.com/{title.lower().replace(' ', '-')}",
+    )
 
 
 # ─────────────────────────────────────────────────────────────
@@ -275,6 +288,92 @@ class TestFetchNewsErrors:
         fetcher = RSSNewsFetcher(source_name="Test")
         with pytest.raises(ConnectionError, match="HTTP"):
             fetcher.fetch_news("https://example.com/rss")
+
+
+# ─────────────────────────────────────────────────────────────
+# fetch_many() — Async batch crawler
+# ─────────────────────────────────────────────────────────────
+
+
+class TestFetchManyAsync:
+    """Tests cho fetch_many() async batch mode."""
+
+    @patch("chahi.infrastructure.rss.rss_fetcher._build_session")
+    def test_fetch_many_groups_articles_by_category(
+        self,
+        mock_session_fn: Any,
+    ) -> None:
+        mock_session_fn.return_value = MagicMock()
+        fetcher = RSSNewsFetcher(source_name="Test")
+
+        oil_reuters = _make_article("Oil Reuters", "Reuters")
+        oil_cnbc = _make_article("Oil CNBC", "CNBC")
+        gold_kitco = _make_article("Gold Kitco", "Kitco")
+
+        fetcher._fetch_news_async = AsyncMock(  # type: ignore[method-assign]
+            side_effect=[
+                [oil_reuters],
+                [oil_cnbc],
+                [gold_kitco],
+            ]
+        )
+
+        tasks = [
+            (
+                SourceCategory.OIL_MACRO,
+                SourceConfig(name="Reuters", url="https://reuters.com/rss", type="rss"),
+            ),
+            (
+                SourceCategory.OIL_MACRO,
+                SourceConfig(name="CNBC", url="https://cnbc.com/rss", type="rss"),
+            ),
+            (
+                SourceCategory.GOLD,
+                SourceConfig(name="Kitco", url="https://kitco.com/rss", type="rss"),
+            ),
+        ]
+
+        result = fetcher.fetch_many(tasks=tasks, limit=5)
+
+        assert len(result[SourceCategory.OIL_MACRO]) == 2
+        assert len(result[SourceCategory.GOLD]) == 1
+        assert result[SourceCategory.OIL_MACRO][0].source_name == "Reuters"
+        assert result[SourceCategory.OIL_MACRO][1].source_name == "CNBC"
+
+    @patch("chahi.infrastructure.rss.rss_fetcher._build_session")
+    def test_fetch_full_text_async_fallbacks_to_curl_on_403(
+        self,
+        mock_session_fn: Any,
+    ) -> None:
+        mock_session_fn.return_value = MagicMock()
+        fetcher = RSSNewsFetcher(source_name="Test")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 403
+        mock_response.text = ""
+        mock_response.headers = {}
+
+        fetcher._safe_get_with_retries_async = AsyncMock(  # type: ignore[method-assign]
+            return_value=mock_response
+        )
+        fetcher._fetch_html_with_curl_cffi_async = AsyncMock(  # type: ignore[method-assign]
+            return_value="<html>full article html</html>"
+        )
+        fetcher._extract_full_text_with_pool = MagicMock(
+            return_value="Full article text"
+        )
+        fetcher._set_cached_full_text = MagicMock()
+
+        result = asyncio.run(
+            fetcher._fetch_full_text_async(
+                url="https://example.com/article",
+                client=MagicMock(),
+                semaphore=asyncio.Semaphore(1),
+            )
+        )
+
+        assert result == "Full article text"
+        fetcher._fetch_html_with_curl_cffi_async.assert_awaited_once()
 
     @patch("chahi.infrastructure.rss.rss_fetcher.RSSCache")
     @patch("chahi.infrastructure.rss.rss_fetcher.feedparser.parse")

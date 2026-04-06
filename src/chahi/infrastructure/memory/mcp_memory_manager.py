@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -28,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 _REQUEST_TIMEOUT: int = 10  # seconds
 _SSE_CONNECT_TIMEOUT: int = 5  # seconds
+_MIN_SEMANTIC_SIMILARITY: float = 0.80
 
 
 class MCPHttpMemoryManager(IMemoryManager):
@@ -160,7 +162,27 @@ class MCPHttpMemoryManager(IMemoryManager):
             logger.info("  Semantic retrieve: không có dữ liệu cho hot keywords.")
             return None
 
-        snippets = self._extract_text_list_from_result(result, limit=max_results)
+        scored_snippets = self._extract_scored_snippets_from_result(
+            result=result,
+            limit=max_results,
+            min_similarity=_MIN_SEMANTIC_SIMILARITY,
+        )
+        if not scored_snippets:
+            logger.info(
+                "  Semantic retrieve: không có đoạn nào đạt ngưỡng similarity >= %.2f",
+                _MIN_SEMANTIC_SIMILARITY,
+            )
+            return None
+
+        snippets: list[str] = []
+        for item in scored_snippets:
+            snippets.append(item["text"])
+            logger.info(
+                "  Đang chèn Sổ Tay Kinh Nghiệm ngày %s, độ liên quan %.2f",
+                item["date_label"],
+                item["similarity"],
+            )
+
         if not snippets:
             logger.info("  Semantic retrieve: MCP trả về rỗng cho hot keywords.")
             return None
@@ -529,3 +551,83 @@ class MCPHttpMemoryManager(IMemoryManager):
 
         unique = list(dict.fromkeys(snippets))
         return unique[: max(1, limit)]
+
+    @staticmethod
+    def _extract_scored_snippets_from_result(
+        result: dict[str, Any],
+        limit: int,
+        min_similarity: float,
+    ) -> list[dict[str, Any]]:
+        """Trích snippets có similarity đạt ngưỡng, kèm metadata audit."""
+        rows: list[dict[str, Any]] = []
+        results = result.get("results", [])
+        if isinstance(results, list):
+            for item in results:
+                if not isinstance(item, dict):
+                    continue
+                text = ""
+                for key in ("text", "document", "content"):
+                    value = item.get(key, "")
+                    if isinstance(value, str) and value.strip():
+                        text = value.strip()
+                        break
+                if not text:
+                    continue
+
+                similarity = MCPHttpMemoryManager._infer_similarity(item)
+                if similarity < min_similarity:
+                    continue
+                rows.append(
+                    {
+                        "text": text,
+                        "similarity": similarity,
+                        "date_label": MCPHttpMemoryManager._extract_date_label(
+                            item,
+                            text,
+                        ),
+                    }
+                )
+
+        rows.sort(key=lambda item: float(item.get("similarity", 0.0)), reverse=True)
+        dedup: list[dict[str, Any]] = []
+        seen_texts: set[str] = set()
+        for row in rows:
+            text = str(row.get("text", "")).strip()
+            if not text or text in seen_texts:
+                continue
+            dedup.append(row)
+            seen_texts.add(text)
+            if len(dedup) >= max(1, limit):
+                break
+        return dedup
+
+    @staticmethod
+    def _infer_similarity(item: dict[str, Any]) -> float:
+        """Suy ra similarity score từ nhiều định dạng metadata phổ biến."""
+        for key in ("similarity", "score", "relevance", "relevance_score"):
+            value = item.get(key)
+            if isinstance(value, (int, float)):
+                return max(0.0, min(1.0, float(value)))
+
+        distance = item.get("distance")
+        if isinstance(distance, (int, float)):
+            # Nhiều vector DB trả distance trong [0, 1].
+            return max(0.0, min(1.0, 1.0 - float(distance)))
+
+        return 0.0
+
+    @staticmethod
+    def _extract_date_label(item: dict[str, Any], text: str) -> str:
+        """Lấy nhãn ngày để audit trail khi chèn bài học vào prompt."""
+        for key in ("date", "created_at", "metadata_source", "source"):
+            value = item.get(key)
+            if isinstance(value, str) and value.strip():
+                match = re.search(r"\d{4}-\d{2}-\d{2}", value)
+                if match:
+                    return match.group(0)
+                return value.strip()[:20]
+
+        match = re.search(r"\d{4}-\d{2}-\d{2}", text)
+        if match:
+            return match.group(0)
+        return "không rõ ngày"

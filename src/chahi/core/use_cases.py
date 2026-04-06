@@ -12,23 +12,22 @@ Quy tắc:
 Pipeline Phase 8 (Map-Reduce + Feedback Loop):
     1. **Retrieve**: Lấy nhận định cũ từ Memory.
     2. **Fetch**: Cào tin tức song song từ RSS.
-    3. **Filter**: Lọc từ khóa + khử trùng lặp bằng Jaccard Similarity.
-    4. **Semantic Retrieve**: Trích hot keywords để lấy bài học liên quan.
-    5. **MAP**: Gọi LLM phân tích từng nhóm (Dầu, Vàng, Crypto).
-    6. **REDUCE**: Gọi LLM tổng hợp 3 bản tóm tắt + Memory → Báo cáo cuối.
-    7. **Store**: Lưu phần Tổng kết vào Memory.
+    3. **Contextualize**: Trích hot keywords + semantic retrieval từ Memory.
+    4. **MAP**: Gọi LLM phân tích từng nhóm (Dầu, Vàng, Crypto).
+    5. **REDUCE**: Gọi LLM tổng hợp 3 bản tóm tắt + Memory → Báo cáo cuối.
+    6. **Store**: Lưu phần Tổng kết vào Memory.
 """
 
 from __future__ import annotations
 
 import logging
 import re
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 from typing import TYPE_CHECKING
 
 from chahi.core.entities import AnalysisContext, SourceCategory
-from chahi.core.services.article_filter import ArticleFilterService
 
 if TYPE_CHECKING:
     from chahi.core.entities import Article, SourceConfig
@@ -61,6 +60,8 @@ Hãy đọc kỹ toàn bộ articles của nhóm **{category_name}** và viết 
 - Chỉ tóm tắt DỮ KIỆN quan trọng, xu hướng, và con số nổi bật.
 - Xác định tâm lý thị trường: tích cực / tiêu cực / trung lập.
 - Ghi nhận yếu tố rủi ro hoặc catalyst tiềm năng.
+- Tuân thủ `<filter_instruction>`: tự deduplicate theo sự kiện và
+  hạ trọng số nguồn kém tin cậy.
 - Viết súc tích, chuyên nghiệp, bằng tiếng Việt.
 - KHÔNG viết heading hay tiêu đề, chỉ bullet points.
 """
@@ -84,6 +85,7 @@ giữa các lớp tài sản, sau đó viết Báo cáo Phân tích Vĩ mô chuy
 **ĐỊNH DẠNG INPUT**:
 - `<analysis_date>`: ngày phân tích.
 - `<hot_keywords>`: cụm từ nóng trích từ tin mới.
+- `<filter_instruction>`: quy tắc lọc nhiễu do LLM tự thực hiện.
 - `<map_summaries>`: kết quả MAP theo từng category.
 - `<previous_lessons>`: bài học lịch sử trích từ Memory.
 
@@ -175,12 +177,6 @@ _SUMMARY_RE = re.compile(
     re.DOTALL,
 )
 
-# ── Ngân sách token tối đa cho user_content ──
-# 28K tokens ≈ an toàn cho model 32K context (chừa chỗ cho system prompt)
-# Vietnamese text: ~1 token / 1.7 chars (conservative)
-_MAX_CONTEXT_TOKENS: int = 28_000
-_CHARS_PER_TOKEN: float = 1.7  # Vietnamese heuristic
-
 # ── Category names (tiếng Việt) cho MAP prompt ──
 _CATEGORY_NAMES: dict[str, str] = {
     "oil_macro": "Dầu & Kinh tế Vĩ mô",
@@ -201,11 +197,10 @@ class GenerateMacroReportUseCase:
     1. **Retrieve**: Lấy nhận định ngày trước từ ``IMemoryManager``.
     2. Đọc cấu hình nguồn tin từ ``IConfigReader``.
     3. Fetch tin tức song song từ ``INewsFetcher``.
-    4. **Filter**: Lọc keyword + khử trùng lặp (Jaccard).
-    5. **Semantic Retrieve**: Query bài học liên quan theo hot keywords.
-    6. **MAP**: Gọi LLM phân tích từng nhóm (3 calls).
-    7. **REDUCE**: Gọi LLM tổng hợp → Báo cáo cuối + Vietnam focus.
-    8. **Store**: Lưu phần Tổng kết vào Memory.
+    4. **Contextualize**: Trích hot keywords và truy xuất bài học liên quan.
+    5. **MAP**: Gọi LLM phân tích từng nhóm (3 calls).
+    6. **REDUCE**: Gọi LLM tổng hợp → Báo cáo cuối + Vietnam focus.
+    7. **Store**: Lưu phần Tổng kết vào Memory.
 
     Args:
         config_reader: Component đọc cấu hình (DI).
@@ -220,13 +215,11 @@ class GenerateMacroReportUseCase:
         news_fetcher: INewsFetcher,
         llm_client: ILLMClient,
         memory_manager: IMemoryManager | None = None,
-        article_filter: ArticleFilterService | None = None,
     ) -> None:
         self._config_reader = config_reader
         self._news_fetcher = news_fetcher
         self._llm_client = llm_client
         self._memory = memory_manager
-        self._article_filter = article_filter or ArticleFilterService()
 
     def execute(self) -> str:
         """Chạy pipeline Map-Reduce với Feedback Loop.
@@ -242,7 +235,7 @@ class GenerateMacroReportUseCase:
         # ── Bước 1: RETRIEVE — lấy nhận định cũ từ Memory ──
         previous_context: str | None = None
         if self._memory is not None:
-            logger.info("Bước 1/8: Truy xuất nhận định cũ từ Memory...")
+            logger.info("Bước 1/7: Truy xuất nhận định cũ từ Memory...")
             try:
                 previous_context = self._memory.retrieve_last_context()
                 if previous_context:
@@ -252,59 +245,44 @@ class GenerateMacroReportUseCase:
             except Exception as exc:
                 logger.warning("  → Lỗi đọc Memory, bỏ qua: %s", exc)
         else:
-            logger.info("Bước 1/8: Memory Manager chưa được cấu hình, bỏ qua.")
+            logger.info("Bước 1/7: Memory Manager chưa được cấu hình, bỏ qua.")
 
         # ── Bước 2: Đọc config nguồn tin ──
-        logger.info("Bước 2/8: Đọc cấu hình nguồn tin...")
+        logger.info("Bước 2/7: Đọc cấu hình nguồn tin...")
         sources = self._config_reader.get_sources()
 
         # ── Bước 3: Fetch tin tức ──
-        logger.info("Bước 3/8: Cào tin tức từ %d categories...", len(sources))
+        logger.info("Bước 3/7: Cào tin tức từ %d categories...", len(sources))
         context = self._fetch_all_news(sources, previous_context)
         if context.is_empty:
             logger.warning("Không có bài viết nào được fetch. Dừng pipeline.")
             return "⚠️ Không có tin tức nào để phân tích."
 
         logger.info(
-            "Trước lọc: %d bài (Oil&Macro=%d, Gold=%d, Crypto=%d)",
+            "Tổng cộng %d bài viết: Oil&Macro=%d, Gold=%d, Crypto=%d",
             context.total_articles,
             len(context.oil_news),
             len(context.gold_news),
             len(context.crypto_news),
         )
 
-        # ── Bước 4: Filter — Keyword + Jaccard Dedup ──
-        logger.info("Bước 4/8: Lọc từ khóa & khử trùng lặp (Jaccard)...")
-        context = self._article_filter.filter_context(context)
-        if context.is_empty:
-            logger.warning("Sau lọc không còn bài liên quan. Dừng pipeline.")
-            return "⚠️ Không có tin tức phù hợp sau bước lọc từ khóa."
-        logger.info(
-            "Sau lọc: %d bài (Oil&Macro=%d, Gold=%d, Crypto=%d)",
-            context.total_articles,
-            len(context.oil_news),
-            len(context.gold_news),
-            len(context.crypto_news),
-        )
-
-        hot_keywords = self._article_filter.extract_hot_keywords(
-            context, max_keywords=8
-        )
+        # ── Bước 4: Contextualize — hot keywords + semantic memory ──
+        hot_keywords = self._extract_hot_keywords_from_context(context, max_keywords=10)
         if hot_keywords:
             logger.info("Hot keywords: %s", ", ".join(hot_keywords))
         else:
             logger.info("Hot keywords: không trích được keyword nổi bật.")
 
-        # ── Bước 5: Semantic retrieve từ Memory theo bối cảnh hiện tại ──
         semantic_context: str | None = None
         if self._memory is not None and hot_keywords:
-            logger.info("Bước 5/8: Truy xuất bài học liên quan (semantic memory)...")
+            logger.info("Bước 4/7: Truy xuất bài học liên quan (semantic memory)...")
             try:
-                semantic_context = self._memory.retrieve_related_context(
+                semantic_raw = self._memory.retrieve_related_context(
                     hot_keywords=hot_keywords,
-                    max_results=3,
+                    max_results=5,
                 )
-                if semantic_context:
+                if isinstance(semantic_raw, str) and semantic_raw.strip():
+                    semantic_context = semantic_raw.strip()
                     logger.info(
                         "  → Tìm thấy bài học liên quan: %d chars",
                         len(semantic_context),
@@ -315,20 +293,20 @@ class GenerateMacroReportUseCase:
                 logger.warning("  → Lỗi semantic retrieval, bỏ qua: %s", exc)
         else:
             logger.info(
-                "Bước 5/8: Bỏ qua semantic retrieval (không có memory/keywords)."
+                "Bước 4/7: Bỏ qua semantic retrieval (không có memory/keywords)."
             )
 
         combined_context = self._merge_contexts(previous_context, semantic_context)
 
-        # ── Bước 6: MAP — Phân tích cục bộ từng nhóm ──
-        logger.info("Bước 6/8: MAP — Phân tích từng nhóm...")
+        # ── Bước 5: MAP — Phân tích cục bộ từng nhóm ──
+        logger.info("Bước 5/7: MAP — Phân tích từng nhóm...")
         category_summaries = self._map_analyze_all(context)
         if not any(category_summaries.values()):
             logger.error("MAP thất bại hoàn toàn. Không có tóm tắt nào.")
             return "⚠️ Không thể phân tích tin tức (MAP failed)."
 
-        # ── Bước 7: REDUCE — Tổng hợp & Bản địa hóa ──
-        logger.info("Bước 7/8: REDUCE — Tổng hợp & Bản địa hóa VN...")
+        # ── Bước 6: REDUCE — Tổng hợp & Bản địa hóa ──
+        logger.info("Bước 6/7: REDUCE — Tổng hợp & Bản địa hóa VN...")
         reduce_input = self._format_reduce_input(
             category_summaries,
             previous_context=combined_context,
@@ -340,9 +318,9 @@ class GenerateMacroReportUseCase:
         )
         logger.info("✓ Báo cáo đã được tạo: %d chars", len(report))
 
-        # ── Bước 8: STORE — Lưu nhận định mới vào Memory ──
+        # ── Bước 7: STORE — Lưu nhận định mới vào Memory ──
         if self._memory is not None:
-            logger.info("Bước 8/8: Lưu nhận định mới vào Memory...")
+            logger.info("Bước 7/7: Lưu nhận định mới vào Memory...")
             try:
                 summary = _extract_summary(report)
                 self._memory.save_context(summary)
@@ -350,7 +328,7 @@ class GenerateMacroReportUseCase:
             except Exception as exc:
                 logger.warning("  → Lỗi lưu Memory, bỏ qua: %s", exc)
         else:
-            logger.info("Bước 8/8: Memory Manager chưa được cấu hình, bỏ qua.")
+            logger.info("Bước 7/7: Memory Manager chưa được cấu hình, bỏ qua.")
 
         return report
 
@@ -380,6 +358,47 @@ class GenerateMacroReportUseCase:
             return semantic
         return None
 
+    @staticmethod
+    def _extract_hot_keywords_from_context(
+        context: AnalysisContext,
+        max_keywords: int = 10,
+    ) -> list[str]:
+        """Trích hot keywords đơn giản từ title/summary để semantic retrieval."""
+        if max_keywords <= 0:
+            return []
+
+        stop_words = {
+            "the",
+            "and",
+            "for",
+            "with",
+            "from",
+            "this",
+            "that",
+            "những",
+            "các",
+            "với",
+            "trong",
+            "khi",
+            "được",
+            "một",
+        }
+        pattern = re.compile(r"[0-9A-Za-zÀ-ỹ]+")
+        counts: Counter[str] = Counter()
+
+        for article in [
+            *context.oil_news,
+            *context.gold_news,
+            *context.crypto_news,
+        ]:
+            tokens = pattern.findall(f"{article.title} {article.summary}".lower())
+            for token in tokens:
+                if len(token) < 4 or token in stop_words:
+                    continue
+                counts[token] += 1
+
+        return [token for token, _count in counts.most_common(max_keywords)]
+
     # ── MAP: Phân tích từng nhóm ─────────────────────────────
 
     _MAX_MAP_WORKERS: int = 3  # 3 nhóm tài sản song song
@@ -401,7 +420,14 @@ class GenerateMacroReportUseCase:
             return ""
 
         # Format articles → semantic tags
-        lines: list[str] = [f'<category name="{category_name}">']
+        lines: list[str] = [
+            "<filter_instruction>",
+            "- Không loại bài khỏi input; chỉ giảm trọng số tin nhiễu trong lập luận.",
+            "- Nếu nhiều bài cùng một sự kiện, hợp nhất ý và giữ nguồn tin cậy hơn.",
+            "- Giữ nguyên số liệu định lượng quan trọng từ các bài trùng.",
+            "</filter_instruction>",
+            f'<category name="{category_name}">',
+        ]
         for i, article in enumerate(articles, 1):
             pub_date = article.published_date.strftime("%d/%m/%Y %H:%M")
             lines.append(f'  <article id="{i}">')
@@ -504,6 +530,12 @@ class GenerateMacroReportUseCase:
             sections.append(", ".join(hot_keywords))
             sections.append("</hot_keywords>\n")
 
+        sections.append("<filter_instruction>")
+        sections.append("- Không xoá dữ liệu gốc; chỉ lọc nhiễu trong suy luận.")
+        sections.append("- Deduplicate theo sự kiện, không làm mất số liệu quan trọng.")
+        sections.append("- Ưu tiên nguồn uy tín khi có thông tin mâu thuẫn.")
+        sections.append("</filter_instruction>\n")
+
         sections.append("<map_summaries>")
         ordered_categories = [
             _CATEGORY_NAMES["oil_macro"],
@@ -525,25 +557,9 @@ class GenerateMacroReportUseCase:
             sections.append(previous_context.strip())
             sections.append("</previous_lessons>")
 
-        result = "\n".join(sections)
-
-        # ── Token budget guard (Vietnamese-safe heuristic) ──
-        estimated_tokens = int(len(result) / _CHARS_PER_TOKEN)
-        if estimated_tokens > _MAX_CONTEXT_TOKENS:
-            # Cắt tại character limit tương đương
-            max_chars = int(_MAX_CONTEXT_TOKENS * _CHARS_PER_TOKEN)
-            logger.warning(
-                "REDUCE input quá dài (~%d tokens > %d). Cắt bớt.",
-                estimated_tokens,
-                _MAX_CONTEXT_TOKENS,
-            )
-            result = result[:max_chars] + "\n\n⚠️ (Đã cắt bớt do giới hạn token)"
-
-        return result
+        return "\n".join(sections)
 
     # ── Fetch tin tức ─────────────────────────────────────────
-
-    _MAX_WORKERS: int = 5  # concurrent RSS fetchers
 
     def _fetch_all_news(
         self,
@@ -575,44 +591,60 @@ class GenerateMacroReportUseCase:
             for source in source_list:
                 tasks.append((category, source))
 
-        # Fetch song song
-        with ThreadPoolExecutor(max_workers=self._MAX_WORKERS) as pool:
-            future_to_source = {
-                pool.submit(
-                    self._news_fetcher.fetch_news,
+        # Ưu tiên fetch_many (async/batch optimized), fallback tuần tự.
+        from chahi.core.interfaces import INewsFetcher
+
+        fetch_many_impl = getattr(type(self._news_fetcher), "fetch_many", None)
+        supports_batch = (
+            isinstance(self._news_fetcher, INewsFetcher)
+            and fetch_many_impl is not None
+            and fetch_many_impl is not INewsFetcher.fetch_many
+        )
+
+        if supports_batch:
+            try:
+                batch_result = self._news_fetcher.fetch_many(tasks=tasks, limit=10)
+                oil_news.extend(batch_result.get(SourceCategory.OIL_MACRO, []))
+                gold_news.extend(batch_result.get(SourceCategory.GOLD, []))
+                crypto_news.extend(batch_result.get(SourceCategory.CRYPTO, []))
+                return AnalysisContext(
+                    date=date.today(),
+                    oil_news=oil_news,
+                    gold_news=gold_news,
+                    crypto_news=crypto_news,
+                    previous_context=previous_context,
+                )
+            except Exception as exc:
+                logger.warning("fetch_many thất bại, fallback tuần tự: %s", exc)
+
+        for category, source in tasks:
+            target = category_map.get(category, [])
+            try:
+                articles = self._news_fetcher.fetch_news(
                     url=source.url,
                     limit=10,
-                ): (category, source)
-                for category, source in tasks
-            }
-
-            for future in as_completed(future_to_source):
-                category, source = future_to_source[future]
-                target = category_map.get(category, [])
-
-                try:
-                    articles = future.result()
-                    target.extend(articles)
-                    logger.info(
-                        "  [%s] %s → %d bài",
-                        category,
-                        source.name,
-                        len(articles),
-                    )
-                except ConnectionError as exc:
-                    logger.warning(
-                        "  [%s] %s → Lỗi kết nối: %s",
-                        category,
-                        source.name,
-                        exc,
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "  [%s] %s → Lỗi không xác định: %s",
-                        category,
-                        source.name,
-                        exc,
-                    )
+                )
+                target.extend(articles)
+                logger.info(
+                    "  [%s] %s → %d bài",
+                    category,
+                    source.name,
+                    len(articles),
+                )
+            except ConnectionError as exc:
+                logger.warning(
+                    "  [%s] %s → Lỗi kết nối: %s",
+                    category,
+                    source.name,
+                    exc,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "  [%s] %s → Lỗi không xác định: %s",
+                    category,
+                    source.name,
+                    exc,
+                )
 
         return AnalysisContext(
             date=date.today(),
