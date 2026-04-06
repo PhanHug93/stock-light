@@ -131,6 +131,49 @@ class MCPHttpMemoryManager(IMemoryManager):
         logger.info("  Không tìm thấy nhận định cũ trong MCP.")
         return None
 
+    def retrieve_related_context(
+        self,
+        hot_keywords: list[str],
+        max_results: int = 3,
+    ) -> str | None:
+        """Truy xuất context liên quan theo hot keywords (semantic search)."""
+        cleaned_keywords = [
+            keyword.strip().lower() for keyword in hot_keywords if keyword.strip()
+        ]
+        if not cleaned_keywords:
+            return None
+
+        unique_keywords = list(dict.fromkeys(cleaned_keywords))[:10]
+        query = "bài học kinh nghiệm phân tích vĩ mô liên quan tới: " + ", ".join(
+            unique_keywords
+        )
+        result = self._call_tool(
+            tool_name="search_memory",
+            arguments={
+                "query": query,
+                "workspace_path": self._workspace_path,
+                "n_results": max(1, max_results),
+            },
+        )
+
+        if result is None:
+            logger.info("  Semantic retrieve: không có dữ liệu cho hot keywords.")
+            return None
+
+        snippets = self._extract_text_list_from_result(result, limit=max_results)
+        if not snippets:
+            logger.info("  Semantic retrieve: MCP trả về rỗng cho hot keywords.")
+            return None
+
+        merged = "\n\n---\n\n".join(snippets)
+        logger.info(
+            "  Semantic retrieve theo keywords (%s): %d đoạn, %d chars",
+            ", ".join(unique_keywords),
+            len(snippets),
+            len(merged),
+        )
+        return merged
+
     @staticmethod
     def _verify_date_in_text(text: str, target_date: str) -> bool:
         """Kiểm tra text có thực sự chứa ngày target_date không.
@@ -451,3 +494,38 @@ class MCPHttpMemoryManager(IMemoryManager):
             return output.strip()
 
         return None
+
+    @staticmethod
+    def _extract_text_list_from_result(
+        result: dict[str, Any],
+        limit: int = 3,
+    ) -> list[str]:
+        """Trích xuất nhiều text snippets từ MCP response và loại trùng lặp."""
+        snippets: list[str] = []
+
+        content = result.get("content", [])
+        if isinstance(content, list):
+            for item in content:
+                if not isinstance(item, dict):
+                    continue
+                text = item.get("text", "")
+                if isinstance(text, str) and text.strip():
+                    snippets.append(text.strip())
+
+        results = result.get("results", [])
+        if isinstance(results, list):
+            for item in results:
+                if not isinstance(item, dict):
+                    continue
+                for key in ("text", "document", "content"):
+                    value = item.get(key, "")
+                    if isinstance(value, str) and value.strip():
+                        snippets.append(value.strip())
+                        break
+
+        output = result.get("output", "")
+        if isinstance(output, str) and output.strip():
+            snippets.append(output.strip())
+
+        unique = list(dict.fromkeys(snippets))
+        return unique[: max(1, limit)]

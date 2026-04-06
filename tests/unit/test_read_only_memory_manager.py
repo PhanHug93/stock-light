@@ -35,3 +35,16 @@ class TestReadOnlyMemoryManager:
         mgr.close()
 
         delegate.close.assert_called_once_with()
+
+    def test_retrieve_related_context_delegates(self) -> None:
+        delegate = MagicMock()
+        delegate.retrieve_related_context.return_value = "related-lessons"
+
+        mgr = ReadOnlyMemoryManager(delegate=delegate)
+        result = mgr.retrieve_related_context(["fed", "dxy"], max_results=2)
+
+        assert result == "related-lessons"
+        delegate.retrieve_related_context.assert_called_once_with(
+            hot_keywords=["fed", "dxy"],
+            max_results=2,
+        )

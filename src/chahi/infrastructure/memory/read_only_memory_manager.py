@@ -27,5 +27,15 @@ class ReadOnlyMemoryManager(IMemoryManager):
             len(context_data),
         )
 
+    def retrieve_related_context(
+        self,
+        hot_keywords: list[str],
+        max_results: int = 3,
+    ) -> str | None:
+        return self._delegate.retrieve_related_context(
+            hot_keywords=hot_keywords,
+            max_results=max_results,
+        )
+
     def close(self) -> None:
         self._delegate.close()

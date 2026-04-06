@@ -35,7 +35,7 @@ class TestApplyLlmCliOverrides:
         settings = LLMSettings(
             provider="gemini",
             api_key="g-key",
-            model_name="gemini-2.0-flash",
+            model_name="gemini-3.1-pro",
             temperature=0.2,
             timeout=150,
         )
@@ -48,7 +48,7 @@ class TestApplyLlmCliOverrides:
         settings = LLMSettings(
             provider="gemini",
             api_key="g-key",
-            model_name="gemini-2.0-flash",
+            model_name="gemini-3.1-pro",
         )
         args = _make_args(provider="openai")
 
@@ -62,7 +62,7 @@ class TestApplyLlmCliOverrides:
         settings = LLMSettings(
             provider="gemini",
             api_key="g-key",
-            model_name="gemini-2.0-flash",
+            model_name="gemini-3.1-pro",
         )
         args = _make_args(
             provider="openai",
@@ -84,7 +84,7 @@ class TestApplyLlmCliOverrides:
         settings = LLMSettings(
             provider="gemini",
             api_key="g-key",
-            model_name="gemini-2.0-flash",
+            model_name="gemini-3.1-pro",
         )
         args = _make_args(provider="lm_studio")
 

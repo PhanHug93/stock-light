@@ -48,7 +48,7 @@ _LLM_PROVIDER_DEFAULTS: dict[str, dict[str, str]] = {
     "gemini": {
         "api_base": "",
         "api_key": "",
-        "model_name": "gemini-2.0-flash",
+        "model_name": "gemini-3.1-pro",
     },
     "openai": {
         "api_base": "https://api.openai.com/v1",

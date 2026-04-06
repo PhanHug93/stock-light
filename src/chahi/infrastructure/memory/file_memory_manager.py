@@ -163,6 +163,15 @@ class FileMemoryManager(IMemoryManager):
             logger.error(msg)
             raise RuntimeError(msg) from None
 
+    def retrieve_related_context(
+        self,
+        hot_keywords: list[str],
+        max_results: int = 3,
+    ) -> str | None:
+        """File backend không hỗ trợ semantic retrieval theo keywords."""
+        _ = hot_keywords, max_results
+        return None
+
     # ── Private: Section management ──────────────────────────
 
     @staticmethod

@@ -265,7 +265,7 @@ class TestGetLLMSettings:
         assert llm.provider == "gemini"
         assert llm.api_base == ""
         assert llm.api_key == ""
-        assert llm.model_name == "gemini-2.0-flash"
+        assert llm.model_name == "gemini-3.1-pro"
         assert llm.temperature == 0.1
 
     def test_openai_provider_defaults(self, tmp_path: Path) -> None:

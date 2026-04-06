@@ -118,7 +118,7 @@ class LLMSettings:
     provider: str = "gemini"
     api_base: str = ""
     api_key: str = ""
-    model_name: str = "gemini-2.0-flash"
+    model_name: str = "gemini-3.1-pro"
     temperature: float = 0.1
     timeout: int = 120  # seconds — local LLM inference có thể chậm
 

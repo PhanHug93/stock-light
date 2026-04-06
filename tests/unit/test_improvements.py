@@ -131,7 +131,7 @@ class TestLLMSettingsProvider:
         settings = LLMSettings(
             provider="gemini",
             api_key="AIzaTest",
-            model_name="gemini-2.0-flash",
+            model_name="gemini-3.1-pro",
         )
         assert settings.provider == "gemini"
 
@@ -182,7 +182,7 @@ class TestLLMFactory:
         settings = LLMSettings(
             provider="gemini",
             api_key="test-key",
-            model_name="gemini-2.0-flash",
+            model_name="gemini-3.1-pro",
         )
         client = create_llm_client(settings)
         assert isinstance(client, GeminiClient)
@@ -521,6 +521,31 @@ class TestMCPHttpMemoryManager:
         # Empty
         result = mgr._extract_text_from_result({})
         assert result is None
+
+    def test_retrieve_related_context_uses_hot_keywords(self) -> None:
+        """retrieve_related_context phải query search_memory theo hot keywords."""
+        from chahi.core.entities import MemorySettings
+        from chahi.infrastructure.memory.mcp_memory_manager import MCPHttpMemoryManager
+
+        settings = MemorySettings(type="mcp", url="http://localhost:8080")
+        mgr = MCPHttpMemoryManager(settings=settings)
+
+        with patch.object(mgr, "_call_tool") as mock_call:
+            mock_call.return_value = {
+                "results": [
+                    {"text": "Bài học #1: Khi Fed hawkish, DXY tăng."},
+                    {"text": "Bài học #2: DXY mạnh gây áp lực lên vàng."},
+                ]
+            }
+
+            result = mgr.retrieve_related_context(["fed", "dxy"], max_results=2)
+
+            assert result is not None
+            assert "Bài học #1" in result
+            assert "Bài học #2" in result
+            args = mock_call.call_args[1]
+            assert args["tool_name"] == "search_memory"
+            assert "fed, dxy" in args["arguments"]["query"]
 
 
 # ─────────────────────────────────────────────────────────────

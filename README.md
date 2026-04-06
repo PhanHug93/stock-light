@@ -2,6 +2,8 @@
 
 CLI tool phân tích tin tức tài chính vĩ mô (**Dầu · Vàng · Crypto**) qua **Gemini / OpenAI / LM Studio**. Tự động cào RSS, tổng hợp dữ liệu, xuất báo cáo Markdown chuyên sâu, và hỗ trợ mode dump input để request ở hệ thống khác.
 
+Phiên bản hiện tại: **v0.0.5**
+
 ```
    _____ _           _    _ _
   / ____| |         | |  | (_)
@@ -21,6 +23,8 @@ CLI tool phân tích tin tức tài chính vĩ mô (**Dầu · Vàng · Crypto**
 | 🥇 **Vàng** | Theo dõi DXY, lợi suất trái phiếu, dòng tiền ETF |
 | ₿ **Crypto** | BTC/ETH, tin pháp lý, dòng tiền tổ chức |
 | 🔄 **Long-term Memory** | Đối chiếu nhận định qua các phiên (File / MCP Server) |
+| 🧹 **Keyword + Dedup Filter** | Lọc từ khóa theo category và khử trùng lặp bằng Jaccard Similarity trước MAP |
+| 🔍 **Semantic Memory Retrieval** | Trích hot keywords từ tin mới để gọi MCP `search_memory` lấy bài học liên quan |
 | 🤖 **Đa nền tảng LLM** | Gemini (mặc định), OpenAI, LM Studio |
 | 🔌 **Dual-Protocol MCP** | Custom REST hoặc JSON-RPC SSE bridge chuẩn |
 | 📝 **Markdown Output** | Báo cáo 6 mục với cấu trúc chuyên sâu |
@@ -39,6 +43,7 @@ Clean Architecture + SOLID + Dependency Injection
 ├──────────────────────────────────────────────────────────┤
 │                     core/ (Domain)                       │
 │  entities.py  │  interfaces.py  │  use_cases.py          │
+│  services/article_filter.py      │
 ├──────────────────────────────────────────────────────────┤
 │                 infrastructure/ (I/O)                    │
 │  config/   │  llm/        │  rss/    │ memory/     │ notify│
@@ -59,6 +64,7 @@ Clean Architecture + SOLID + Dependency Injection
 ### Tổ chức source (đã rà soát)
 
 - `src/chahi/core`: entities + interfaces + use case orchestration.
+- `src/chahi/core/services`: domain services chạy local CPU (keyword filter, dedup, hot keywords).
 - `src/chahi/infrastructure/llm`: provider clients (`gemini`, `openai`, `lm_studio`) + wrappers (`recording`, `capture-only`) + `llm_factory`.
 - `src/chahi/infrastructure/memory`: backends (`file`, `mcp`) + `read_only_memory_manager`.
 - `src/chahi/infrastructure/notifiers`: telegram/discord adapters, manager composite, factory.
@@ -147,7 +153,7 @@ Mặc định hệ thống dùng **Gemini**. Có thể đổi sang **OpenAI** ho
 llm_settings:
   provider: "gemini"                 # "gemini" | "openai" | "lm_studio"
   api_key: "AIza..."
-  model_name: "gemini-2.0-flash"
+  model_name: "gemini-3.1-pro"
   temperature: 0.1
   timeout: 120                        # Tăng 300-600 cho model 70B+
 ```
@@ -228,7 +234,7 @@ Không cần sửa `config.yaml`, có thể override trực tiếp bằng comman
 python main.py --provider openai --api-key "$OPENAI_API_KEY" --model gpt-5.4
 
 # Dùng Gemini (mặc định)
-python main.py --provider gemini --api-key "$GEMINI_API_KEY" --model gemini-2.0-flash
+python main.py --provider gemini --api-key "$GEMINI_API_KEY" --model gemini-3.1-pro
 
 # Dùng LM Studio local
 python main.py --provider lm_studio --api-base http://localhost:1234/v1 --api-key lm-studio --model qwen2.5-7b-instruct
