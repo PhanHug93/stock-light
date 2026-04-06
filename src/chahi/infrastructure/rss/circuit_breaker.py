@@ -43,9 +43,8 @@ class DomainCircuitBreaker:
         """Lấy state hiện tại; OPEN hết TTL sẽ tự chuyển HALF_OPEN."""
         with self._lock:
             state = self._states.get(domain, BreakerState.CLOSED)
-            if (
-                state == BreakerState.OPEN
-                and time.time() > self._open_until.get(domain, 0.0)
+            if state == BreakerState.OPEN and time.time() > self._open_until.get(
+                domain, 0.0
             ):
                 self._states[domain] = BreakerState.HALF_OPEN
                 return BreakerState.HALF_OPEN

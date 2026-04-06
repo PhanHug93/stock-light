@@ -458,6 +458,19 @@ class TestURLSchemeValidation:
 class TestDeepScraper:
     """Tests cho Phase 10: Deep Web Scraper & Full-text Extraction."""
 
+    @pytest.fixture(autouse=True)
+    def _isolate_fulltext_cache(
+        self,
+        tmp_path: Any,
+        monkeypatch: Any,
+    ) -> None:
+        """Mỗi test dùng cache dir riêng để tránh leak state giữa tests."""
+        monkeypatch.setattr(
+            rss_fetcher_module,
+            "_FULL_TEXT_CACHE_DIR",
+            tmp_path / "fulltext-cache",
+        )
+
     @patch("chahi.infrastructure.rss.rss_fetcher.RSSCache")
     @patch("chahi.infrastructure.rss.rss_fetcher._trafilatura_extract")
     @patch("chahi.infrastructure.rss.rss_fetcher._build_session")
@@ -728,6 +741,30 @@ class TestCrawlerEnhancements:
         assert article is not None
         assert "full text from curl" in article.summary
         fetcher._fetch_full_text_half_open_probe.assert_called_once()
+        fetcher._fetch_full_text.assert_not_called()
+
+    @patch("chahi.infrastructure.rss.rss_fetcher._build_session")
+    def test_parse_entry_skips_deep_scrape_when_google_not_resolved(
+        self,
+        mock_session_fn: Any,
+    ) -> None:
+        mock_session_fn.return_value = MagicMock()
+        fetcher = RSSNewsFetcher(source_name="Test")
+        fetcher._resolve_google_news_url = MagicMock(  # type: ignore[method-assign]
+            return_value="https://news.google.com/rss/articles/CBMi..."
+        )
+        fetcher._fetch_full_text = MagicMock(return_value="unexpected")
+        teaser = "short teaser"
+
+        entry = _make_entry(
+            title="Gold outlook",
+            link="https://news.google.com/rss/articles/CBMi...",
+            summary=teaser,
+        )
+
+        article = fetcher._parse_entry(entry, allow_deep_scrape=True)
+        assert article is not None
+        assert article.summary == teaser
         fetcher._fetch_full_text.assert_not_called()
 
     @patch("chahi.infrastructure.rss.rss_fetcher._build_session")

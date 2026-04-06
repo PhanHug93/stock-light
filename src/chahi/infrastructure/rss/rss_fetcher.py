@@ -1173,7 +1173,7 @@ class RSSNewsFetcher(INewsFetcher):
                 method="HEAD",
             )
             resolved = str(response.url or url)
-            if response.status_code in (405, 501):
+            if response.status_code in (405, 501) or is_google_news_url(resolved):
                 response = await self._safe_get_with_retries_async(
                     client=client,
                     semaphore=semaphore,
