@@ -103,11 +103,12 @@ class TestLLMSettings:
     """Test suite cho LLMSettings."""
 
     def test_defaults(self) -> None:
-        """Giá trị mặc định phải phù hợp LM Studio."""
+        """Giá trị mặc định phải phù hợp Gemini."""
         llm = LLMSettings()
-        assert llm.api_base == "http://localhost:1234/v1"
-        assert llm.api_key == "lm-studio"
-        assert llm.model_name == "default"
+        assert llm.provider == "gemini"
+        assert llm.api_base == ""
+        assert llm.api_key == ""
+        assert llm.model_name == "gemini-2.0-flash"
         assert llm.temperature == 0.1
 
     def test_custom_values(self) -> None:
@@ -121,6 +122,16 @@ class TestLLMSettings:
         assert llm.api_base == "http://custom:8080/v1"
         assert llm.model_name == "qwen2.5-7b"
 
+    def test_openai_provider_valid(self) -> None:
+        """Provider openai phải hợp lệ."""
+        llm = LLMSettings(
+            provider="openai",
+            api_base="https://api.openai.com/v1",
+            api_key="sk-test",
+            model_name="gpt-4o-mini",
+        )
+        assert llm.provider == "openai"
+
     def test_frozen(self) -> None:
         """Không thể thay đổi attribute."""
         llm = LLMSettings()
@@ -128,9 +139,9 @@ class TestLLMSettings:
             llm.temperature = 0.5  # type: ignore[misc]
 
     def test_empty_api_base_raises(self) -> None:
-        """api_base trống phải raise ValueError."""
+        """api_base trống phải raise ValueError khi dùng lm_studio."""
         with pytest.raises(ValueError, match="api_base"):
-            LLMSettings(api_base="")
+            LLMSettings(provider="lm_studio", api_base="")
 
     def test_temperature_too_high_raises(self) -> None:
         """Temperature > 2.0 phải raise ValueError."""

@@ -85,7 +85,7 @@ pip install -e ".[dev]"
 | `feedparser` | Parse RSS feeds |
 | `beautifulsoup4` | Xử lý HTML rác trong RSS |
 | `requests` | HTTP client (RSS + MCP) |
-| `openai` | Kết nối LM Studio (OpenAI-compatible) |
+| `openai` | Kết nối LM Studio (OpenAI-compatible) + OpenAI API |
 | `google-genai` | Kết nối Google Gemini |
 | `pyyaml` | Đọc config YAML |
 | `tiktoken` | Đếm token chính xác (LLM budget) |
@@ -124,19 +124,19 @@ sources:
 
 ### 🤖 LLM Provider
 
-Chuyển đổi giữa **LM Studio** và **Gemini** bằng 1 dòng `provider`:
+Mặc định hệ thống dùng **Gemini**. Có thể đổi sang **OpenAI** hoặc **LM Studio**:
 
 ```yaml
 llm_settings:
-  provider: "lm_studio"              # "lm_studio" | "gemini"
-  api_base: "http://localhost:1234/v1"
-  api_key: "lm-studio"
-  model_name: "qwen2.5-7b-instruct"
+  provider: "gemini"                 # "gemini" | "openai" | "lm_studio"
+  api_key: "AIza..."
+  model_name: "gemini-2.0-flash"
   temperature: 0.1
   timeout: 120                        # Tăng 300-600 cho model 70B+
 ```
 
-Dùng Gemini? Đổi `provider: "gemini"` và set `api_key`.
+- OpenAI: `provider: "openai"`, `api_key: "sk-..."`, `model_name: "gpt-4o-mini"`
+- LM Studio: `provider: "lm_studio"`, `api_base: "http://localhost:1234/v1"`
 
 ### 🧠 Memory (Bộ nhớ dài hạn)
 
@@ -201,6 +201,23 @@ python main.py                                    # Config mặc định
 python main.py --config path/to/config.yaml       # Config tùy chỉnh
 python main.py --output-dir ./my-reports           # Output tùy chỉnh
 ```
+
+### Control command cho provider (CLI override)
+
+Không cần sửa `config.yaml`, có thể override trực tiếp bằng command:
+
+```bash
+# Dùng OpenAI ngay từ CLI
+python main.py --provider openai --api-key "$OPENAI_API_KEY" --model gpt-4o-mini
+
+# Dùng Gemini (mặc định)
+python main.py --provider gemini --api-key "$GEMINI_API_KEY" --model gemini-2.0-flash
+
+# Dùng LM Studio local
+python main.py --provider lm_studio --api-base http://localhost:1234/v1 --api-key lm-studio --model qwen2.5-7b-instruct
+```
+
+`--provider` sẽ reset default theo provider đã chọn, sau đó áp dụng các override cụ thể (`--api-key`, `--model`, `--api-base`, `--temperature`, `--timeout`).
 
 ### Chọn kênh gửi notification
 
@@ -341,6 +358,7 @@ stock-light/
 │       ├── llm/
 │       │   ├── lm_studio_client.py     # OpenAI-compatible
 │       │   ├── gemini_client.py        # Google Gemini
+│       │   ├── openai_client.py        # OpenAI API
 │       │   └── llm_factory.py          # Strategy Pattern
 │       ├── rss/
 │       │   └── rss_fetcher.py          # RSS + BeautifulSoup

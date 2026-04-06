@@ -103,22 +103,22 @@ class LLMSettings:
     """Cấu hình kết nối tới LLM provider.
 
     Hỗ trợ Strategy Pattern: chuyển đổi giữa LM Studio (local)
-    và Google Gemini (cloud) qua field ``provider``.
+    và cloud providers (Gemini/OpenAI) qua field ``provider``.
 
     Attributes:
-        provider: Tên provider ("lm_studio" hoặc "gemini").
-        api_base: Base URL của API endpoint (LM Studio only).
+        provider: Tên provider ("lm_studio", "gemini", "openai").
+        api_base: Base URL của API endpoint (LM Studio/OpenAI-compatible).
         api_key: API key cho provider.
         model_name: Tên model.
         temperature: Độ sáng tạo (0.0 = deterministic, 2.0 = max).
     """
 
-    _VALID_PROVIDERS: tuple[str, ...] = ("lm_studio", "gemini")
+    _VALID_PROVIDERS: tuple[str, ...] = ("lm_studio", "gemini", "openai")
 
-    provider: str = "lm_studio"
-    api_base: str = "http://localhost:1234/v1"
-    api_key: str = "lm-studio"
-    model_name: str = "default"
+    provider: str = "gemini"
+    api_base: str = ""
+    api_key: str = ""
+    model_name: str = "gemini-2.0-flash"
     temperature: float = 0.1
     timeout: int = 120  # seconds — local LLM inference có thể chậm
 

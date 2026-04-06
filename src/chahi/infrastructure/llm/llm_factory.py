@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 from chahi.infrastructure.llm.gemini_client import GeminiClient
 from chahi.infrastructure.llm.lm_studio_client import LMStudioClient
+from chahi.infrastructure.llm.openai_client import OpenAIClient
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -27,6 +28,7 @@ logger = logging.getLogger(__name__)
 _PROVIDERS: dict[str, Callable[[LLMSettings], ILLMClient]] = {
     "lm_studio": lambda s: LMStudioClient(settings=s),
     "gemini": lambda s: GeminiClient(settings=s),
+    "openai": lambda s: OpenAIClient(settings=s),
 }
 
 

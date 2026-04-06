@@ -25,6 +25,24 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_PROVIDER_DEFAULTS: dict[str, dict[str, str]] = {
+    "gemini": {
+        "api_base": "",
+        "api_key": "",
+        "model_name": "gemini-2.0-flash",
+    },
+    "lm_studio": {
+        "api_base": "http://localhost:1234/v1",
+        "api_key": "lm-studio",
+        "model_name": "default",
+    },
+    "openai": {
+        "api_base": "https://api.openai.com/v1",
+        "api_key": "",
+        "model_name": "gpt-4o-mini",
+    },
+}
+
 
 class YamlConfigReader(IConfigReader):
     """Đọc cấu hình ứng dụng từ file YAML.
@@ -102,11 +120,14 @@ class YamlConfigReader(IConfigReader):
                 f"nhận được: {type(llm_raw).__name__}"
             )
 
+        provider = str(llm_raw.get("provider", "gemini")).strip().lower()
+        defaults = _PROVIDER_DEFAULTS.get(provider, _PROVIDER_DEFAULTS["gemini"])
+
         settings = LLMSettings(
-            provider=str(llm_raw.get("provider", "lm_studio")),
-            api_base=str(llm_raw.get("api_base", "http://localhost:1234/v1")),
-            api_key=str(llm_raw.get("api_key", "lm-studio")),
-            model_name=str(llm_raw.get("model_name", "default")),
+            provider=provider,
+            api_base=str(llm_raw.get("api_base", defaults["api_base"])),
+            api_key=str(llm_raw.get("api_key", defaults["api_key"])),
+            model_name=str(llm_raw.get("model_name", defaults["model_name"])),
             temperature=float(llm_raw.get("temperature", 0.1)),
             timeout=int(llm_raw.get("timeout", 120)),
         )

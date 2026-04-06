@@ -35,21 +35,25 @@ sources:
       type: rss
 
 # =============================================================
-# LLM Settings — Chọn provider: "lm_studio" hoặc "gemini"
+# LLM Settings — Mặc định dùng Gemini
+# Có thể đổi sang: "openai" hoặc "lm_studio"
 # =============================================================
 llm_settings:
-  provider: "lm_studio"           # "lm_studio" | "gemini"
-
-  # ── LM Studio (local) ──
-  api_base: "http://localhost:1234/v1"
-  api_key: "lm-studio"
-  model_name: "qwen2.5-7b-instruct"
+  provider: "gemini"             # "gemini" | "openai" | "lm_studio"
+  api_key: ""                    # Gemini API key
+  model_name: "gemini-2.0-flash"
   temperature: 0.1
   timeout: 120                     # Giây. Tăng lên 300-600 nếu dùng model lớn (70B+)
 
-  # ── Gemini (cloud) — uncomment và đổi provider: "gemini" ──
-  # api_key: "AIza..."
-  # model_name: "gemini-2.0-flash"
+  # ── OpenAI (cloud) — đổi provider: "openai" ──
+  # api_key: "sk-..."
+  # model_name: "gpt-4o-mini"
+  # api_base: "https://api.openai.com/v1"   # optional
+
+  # ── LM Studio (local) — đổi provider: "lm_studio" ──
+  # api_base: "http://localhost:1234/v1"
+  # api_key: "lm-studio"
+  # model_name: "qwen2.5-7b-instruct"
 
 # =============================================================
 # Logging — Tùy chỉnh output (optional)
@@ -81,4 +85,3 @@ notifications:
   discord:
     enabled: false
     webhook_url: ""                # Server Settings → Integrations → Webhooks
-
