@@ -11,6 +11,7 @@ Usage:
     python main.py --output-dir ./my-reports
     python main.py --provider openai --api-key "$OPENAI_API_KEY" --model gpt-5.4
     python main.py --dump-llm-input-dir ./llm_inputs
+    python main.py --dump-llm-input-dir ./llm_inputs --no-memory-store --telegram
 """
 
 from __future__ import annotations
@@ -175,6 +176,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Dump input (system prompt + user content) trước mỗi lần gọi LLM "
             "vào thư mục chỉ định."
+        ),
+    )
+    parser.add_argument(
+        "--no-memory-store",
+        action="store_true",
+        default=False,
+        help=(
+            "Không lưu context mới vào memory (vẫn đọc context cũ). "
+            "Phù hợp khi chạy debug/fallback để tránh bẩn memory."
         ),
     )
 
@@ -493,6 +503,13 @@ def main() -> None:
 
     memory_settings = config_reader.get_memory_settings()
     memory_manager = create_memory_manager(settings=memory_settings)
+    if args.no_memory_store:
+        from chahi.infrastructure.memory.read_only_memory_manager import (
+            ReadOnlyMemoryManager,
+        )
+
+        memory_manager = ReadOnlyMemoryManager(delegate=memory_manager)
+        logger.info("Memory store disabled (--no-memory-store): chỉ read, không save.")
 
     try:
         # ── 3. Khởi tạo & chạy Use Case ──
