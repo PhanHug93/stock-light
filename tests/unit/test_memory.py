@@ -155,7 +155,7 @@ class TestFeedbackLoop:
         mock_fetcher.fetch_news.return_value = [
             MagicMock(
                 title="Test",
-                summary="Summary",
+                summary="Fed giữ lãi suất, vàng tăng nhẹ và Bitcoin ETF hút vốn.",
                 source_name="Src",
                 published_date=MagicMock(
                     strftime=MagicMock(return_value="01/01/2026 10:00")
@@ -167,6 +167,7 @@ class TestFeedbackLoop:
         mock_llm.analyze.return_value = "## 6. 📋 Tổng kết\n- Kết luận"
         mock_memory = MagicMock()
         mock_memory.retrieve_last_context.return_value = "Hôm qua: Dầu tăng mạnh."
+        mock_memory.retrieve_related_context.return_value = None
 
         use_case = GenerateMacroReportUseCase(
             config_reader=mock_config,
@@ -194,7 +195,7 @@ class TestFeedbackLoop:
         mock_fetcher.fetch_news.return_value = [
             MagicMock(
                 title="Test",
-                summary="Summary",
+                summary="Fed giữ lãi suất, vàng tăng nhẹ và Bitcoin ETF hút vốn.",
                 source_name="Src",
                 published_date=MagicMock(
                     strftime=MagicMock(return_value="01/01/2026 10:00")
@@ -206,6 +207,7 @@ class TestFeedbackLoop:
         mock_llm.analyze.return_value = "## 6. 📋 Tổng kết\n- Dầu giảm 2%"
         mock_memory = MagicMock()
         mock_memory.retrieve_last_context.return_value = None
+        mock_memory.retrieve_related_context.return_value = None
 
         use_case = GenerateMacroReportUseCase(
             config_reader=mock_config,
@@ -230,7 +232,7 @@ class TestFeedbackLoop:
         mock_fetcher.fetch_news.return_value = [
             MagicMock(
                 title="Test",
-                summary="Summary",
+                summary="Fed giữ lãi suất, vàng tăng nhẹ và Bitcoin ETF hút vốn.",
                 source_name="Src",
                 published_date=MagicMock(
                     strftime=MagicMock(return_value="01/01/2026 10:00")

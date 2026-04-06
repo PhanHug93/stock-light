@@ -9,12 +9,14 @@ Quy tắc:
     - Không import trực tiếp infrastructure modules.
     - Prompts được định nghĩa tại đây vì chúng là application logic.
 
-Pipeline Phase 7 (Map-Reduce + Feedback Loop):
+Pipeline Phase 8 (Map-Reduce + Feedback Loop):
     1. **Retrieve**: Lấy nhận định cũ từ Memory.
     2. **Fetch**: Cào tin tức song song từ RSS.
-    3. **MAP**: Gọi LLM phân tích từng nhóm (Dầu, Vàng, Crypto) song song.
-    4. **REDUCE**: Gọi LLM tổng hợp 3 bản tóm tắt + Memory → Báo cáo cuối.
-    5. **Store**: Lưu phần Tổng kết vào Memory.
+    3. **Filter**: Lọc từ khóa + khử trùng lặp bằng Jaccard Similarity.
+    4. **Semantic Retrieve**: Trích hot keywords để lấy bài học liên quan.
+    5. **MAP**: Gọi LLM phân tích từng nhóm (Dầu, Vàng, Crypto).
+    6. **REDUCE**: Gọi LLM tổng hợp 3 bản tóm tắt + Memory → Báo cáo cuối.
+    7. **Store**: Lưu phần Tổng kết vào Memory.
 """
 
 from __future__ import annotations
@@ -26,6 +28,7 @@ from datetime import date
 from typing import TYPE_CHECKING
 
 from chahi.core.entities import AnalysisContext, SourceCategory
+from chahi.core.services.article_filter import ArticleFilterService
 
 if TYPE_CHECKING:
     from chahi.core.entities import Article, SourceConfig
@@ -43,11 +46,18 @@ logger = logging.getLogger(__name__)
 # ═════════════════════════════════════════════════════════════
 
 MAP_PROMPT: str = """\
-Bạn là Chuyên gia Phân tích Tài chính. Đọc kỹ danh sách tin tức \
-của nhóm **{category_name}** dưới đây và viết BẢN TÓM TẮT gồm \
-đúng 3-5 ý chính (bullet points).
+Bạn là Chuyên gia Phân tích Tài chính. Input được cung cấp dưới dạng \
+XML-like tags:
+- `<category name="...">`
+- `<article id="...">` với các field:
+  `<title>`, `<source>`, `<published_at>`, `<summary>`.
 
-**YÊU CẦU**:
+Hãy đọc kỹ toàn bộ articles của nhóm **{category_name}** và viết BẢN TÓM TẮT gồm \
+đúng 3-5 bullet points.
+
+**YÊU CẦU PHÂN TÍCH**:
+- Ưu tiên dữ kiện có tác động vĩ mô/cross-asset.
+- Bỏ qua thông tin lặp lại hoặc ít giá trị.
 - Chỉ tóm tắt DỮ KIỆN quan trọng, xu hướng, và con số nổi bật.
 - Xác định tâm lý thị trường: tích cực / tiêu cực / trung lập.
 - Ghi nhận yếu tố rủi ro hoặc catalyst tiềm năng.
@@ -63,11 +73,19 @@ REDUCE_PROMPT: str = """\
 Bạn là Giám đốc Đầu tư (CIO) hàng đầu Việt Nam với hơn 20 năm kinh nghiệm \
 điều phối danh mục tài sản lớn, đặc biệt am hiểu sâu sắc về VN-Index và \
 nhóm cổ phiếu Ngân hàng. Bạn có tư duy quân sự: kỷ luật, tàn nhẫn khi sai, \
-và luôn ghi nhật ký chiến trận để không bao giờ lặp lại sai lầm.
+và luôn ghi nhật ký chiến trận để không bao giờ lặp lại sai lầm. Bạn cần tận dụng \
+khả năng suy luận sâu kiểu Gemini 3.1 Pro: bám dữ liệu, liên kết tác động ngầm, \
+không suy diễn vô căn cứ.
 
 **NHIỆM VỤ**: Bạn nhận được 3 bản tóm tắt phân tích từ 3 nhóm tài sản \
 (Dầu & Vĩ mô, Vàng, Crypto). Hãy TỔNG HỢP và SUY LUẬN TÁC ĐỘNG CHÉO \
 giữa các lớp tài sản, sau đó viết Báo cáo Phân tích Vĩ mô chuyên sâu.
+
+**ĐỊNH DẠNG INPUT**:
+- `<analysis_date>`: ngày phân tích.
+- `<hot_keywords>`: cụm từ nóng trích từ tin mới.
+- `<map_summaries>`: kết quả MAP theo từng category.
+- `<previous_lessons>`: bài học lịch sử trích từ Memory.
 
 **TRỌNG TÂM SUY LUẬN**:
 - Dòng tiền đang dịch chuyển thế nào giữa Dầu → Vàng → Crypto?
@@ -179,13 +197,15 @@ _CATEGORY_NAMES: dict[str, str] = {
 class GenerateMacroReportUseCase:
     """Use case: Tạo báo cáo phân tích vĩ mô (Map-Reduce + Memory).
 
-    Pipeline Phase 7:
+    Pipeline Phase 8:
     1. **Retrieve**: Lấy nhận định ngày trước từ ``IMemoryManager``.
     2. Đọc cấu hình nguồn tin từ ``IConfigReader``.
     3. Fetch tin tức song song từ ``INewsFetcher``.
-    4. **MAP**: Gọi LLM phân tích từng nhóm (3 calls song song).
-    5. **REDUCE**: Gọi LLM tổng hợp → Báo cáo cuối + Vietnam focus.
-    6. **Store**: Lưu phần Tổng kết vào Memory.
+    4. **Filter**: Lọc keyword + khử trùng lặp (Jaccard).
+    5. **Semantic Retrieve**: Query bài học liên quan theo hot keywords.
+    6. **MAP**: Gọi LLM phân tích từng nhóm (3 calls).
+    7. **REDUCE**: Gọi LLM tổng hợp → Báo cáo cuối + Vietnam focus.
+    8. **Store**: Lưu phần Tổng kết vào Memory.
 
     Args:
         config_reader: Component đọc cấu hình (DI).
@@ -200,11 +220,13 @@ class GenerateMacroReportUseCase:
         news_fetcher: INewsFetcher,
         llm_client: ILLMClient,
         memory_manager: IMemoryManager | None = None,
+        article_filter: ArticleFilterService | None = None,
     ) -> None:
         self._config_reader = config_reader
         self._news_fetcher = news_fetcher
         self._llm_client = llm_client
         self._memory = memory_manager
+        self._article_filter = article_filter or ArticleFilterService()
 
     def execute(self) -> str:
         """Chạy pipeline Map-Reduce với Feedback Loop.
@@ -220,7 +242,7 @@ class GenerateMacroReportUseCase:
         # ── Bước 1: RETRIEVE — lấy nhận định cũ từ Memory ──
         previous_context: str | None = None
         if self._memory is not None:
-            logger.info("Bước 1/7: Truy xuất nhận định cũ từ Memory...")
+            logger.info("Bước 1/8: Truy xuất nhận định cũ từ Memory...")
             try:
                 previous_context = self._memory.retrieve_last_context()
                 if previous_context:
@@ -230,49 +252,97 @@ class GenerateMacroReportUseCase:
             except Exception as exc:
                 logger.warning("  → Lỗi đọc Memory, bỏ qua: %s", exc)
         else:
-            logger.info("Bước 1/7: Memory Manager chưa được cấu hình, bỏ qua.")
+            logger.info("Bước 1/8: Memory Manager chưa được cấu hình, bỏ qua.")
 
         # ── Bước 2: Đọc config nguồn tin ──
-        logger.info("Bước 2/7: Đọc cấu hình nguồn tin...")
+        logger.info("Bước 2/8: Đọc cấu hình nguồn tin...")
         sources = self._config_reader.get_sources()
 
         # ── Bước 3: Fetch tin tức ──
-        logger.info("Bước 3/7: Cào tin tức từ %d categories...", len(sources))
+        logger.info("Bước 3/8: Cào tin tức từ %d categories...", len(sources))
         context = self._fetch_all_news(sources, previous_context)
-
         if context.is_empty:
             logger.warning("Không có bài viết nào được fetch. Dừng pipeline.")
             return "⚠️ Không có tin tức nào để phân tích."
 
         logger.info(
-            "Tổng cộng %d bài viết: Oil&Macro=%d, Gold=%d, Crypto=%d",
+            "Trước lọc: %d bài (Oil&Macro=%d, Gold=%d, Crypto=%d)",
             context.total_articles,
             len(context.oil_news),
             len(context.gold_news),
             len(context.crypto_news),
         )
 
-        # ── Bước 4: MAP — Phân tích cục bộ từng nhóm (song song) ──
-        logger.info("Bước 4/7: MAP — Phân tích từng nhóm song song...")
-        category_summaries = self._map_analyze_all(context)
+        # ── Bước 4: Filter — Keyword + Jaccard Dedup ──
+        logger.info("Bước 4/8: Lọc từ khóa & khử trùng lặp (Jaccard)...")
+        context = self._article_filter.filter_context(context)
+        if context.is_empty:
+            logger.warning("Sau lọc không còn bài liên quan. Dừng pipeline.")
+            return "⚠️ Không có tin tức phù hợp sau bước lọc từ khóa."
+        logger.info(
+            "Sau lọc: %d bài (Oil&Macro=%d, Gold=%d, Crypto=%d)",
+            context.total_articles,
+            len(context.oil_news),
+            len(context.gold_news),
+            len(context.crypto_news),
+        )
 
+        hot_keywords = self._article_filter.extract_hot_keywords(
+            context, max_keywords=8
+        )
+        if hot_keywords:
+            logger.info("Hot keywords: %s", ", ".join(hot_keywords))
+        else:
+            logger.info("Hot keywords: không trích được keyword nổi bật.")
+
+        # ── Bước 5: Semantic retrieve từ Memory theo bối cảnh hiện tại ──
+        semantic_context: str | None = None
+        if self._memory is not None and hot_keywords:
+            logger.info("Bước 5/8: Truy xuất bài học liên quan (semantic memory)...")
+            try:
+                semantic_context = self._memory.retrieve_related_context(
+                    hot_keywords=hot_keywords,
+                    max_results=3,
+                )
+                if semantic_context:
+                    logger.info(
+                        "  → Tìm thấy bài học liên quan: %d chars",
+                        len(semantic_context),
+                    )
+                else:
+                    logger.info("  → Không có bài học liên quan từ semantic retrieval.")
+            except Exception as exc:
+                logger.warning("  → Lỗi semantic retrieval, bỏ qua: %s", exc)
+        else:
+            logger.info(
+                "Bước 5/8: Bỏ qua semantic retrieval (không có memory/keywords)."
+            )
+
+        combined_context = self._merge_contexts(previous_context, semantic_context)
+
+        # ── Bước 6: MAP — Phân tích cục bộ từng nhóm ──
+        logger.info("Bước 6/8: MAP — Phân tích từng nhóm...")
+        category_summaries = self._map_analyze_all(context)
         if not any(category_summaries.values()):
             logger.error("MAP thất bại hoàn toàn. Không có tóm tắt nào.")
             return "⚠️ Không thể phân tích tin tức (MAP failed)."
 
-        # ── Bước 5: REDUCE — Tổng hợp & Bản địa hóa ──
-        logger.info("Bước 5/7: REDUCE — Tổng hợp & Bản địa hóa VN...")
-        reduce_input = self._format_reduce_input(category_summaries, previous_context)
+        # ── Bước 7: REDUCE — Tổng hợp & Bản địa hóa ──
+        logger.info("Bước 7/8: REDUCE — Tổng hợp & Bản địa hóa VN...")
+        reduce_input = self._format_reduce_input(
+            category_summaries,
+            previous_context=combined_context,
+            hot_keywords=hot_keywords,
+        )
         report = self._llm_client.analyze(
             system_prompt=REDUCE_PROMPT,
             user_content=reduce_input,
         )
-
         logger.info("✓ Báo cáo đã được tạo: %d chars", len(report))
 
-        # ── Bước 6: STORE — Lưu nhận định mới vào Memory ──
+        # ── Bước 8: STORE — Lưu nhận định mới vào Memory ──
         if self._memory is not None:
-            logger.info("Bước 6/7: Lưu nhận định mới vào Memory...")
+            logger.info("Bước 8/8: Lưu nhận định mới vào Memory...")
             try:
                 summary = _extract_summary(report)
                 self._memory.save_context(summary)
@@ -280,9 +350,35 @@ class GenerateMacroReportUseCase:
             except Exception as exc:
                 logger.warning("  → Lỗi lưu Memory, bỏ qua: %s", exc)
         else:
-            logger.info("Bước 6/7: Memory Manager chưa được cấu hình, bỏ qua.")
+            logger.info("Bước 8/8: Memory Manager chưa được cấu hình, bỏ qua.")
 
         return report
+
+    @staticmethod
+    def _merge_contexts(
+        previous_context: str | None,
+        semantic_context: str | None,
+    ) -> str | None:
+        """Ghép context gần nhất + context semantic, tránh trùng lặp."""
+        previous = (previous_context or "").strip()
+        semantic = (semantic_context or "").strip()
+
+        if previous and semantic:
+            if semantic in previous:
+                return previous
+            if previous in semantic:
+                return semantic
+            return (
+                "### [NHÌN LẠI QUÁ KHỨ] — Phiên gần nhất\n"
+                f"{previous}\n\n"
+                "### [BÀI HỌC LIÊN QUAN] — Truy xuất theo hot keywords\n"
+                f"{semantic}"
+            )
+        if previous:
+            return previous
+        if semantic:
+            return semantic
+        return None
 
     # ── MAP: Phân tích từng nhóm ─────────────────────────────
 
@@ -304,16 +400,17 @@ class GenerateMacroReportUseCase:
         if not articles:
             return ""
 
-        # Format articles → text
-        lines: list[str] = []
+        # Format articles → semantic tags
+        lines: list[str] = [f'<category name="{category_name}">']
         for i, article in enumerate(articles, 1):
             pub_date = article.published_date.strftime("%d/%m/%Y %H:%M")
-            lines.append(f"--- Tin #{i} ---")
-            lines.append(f"Tiêu đề : {article.title}")
-            lines.append(f"Nguồn   : {article.source_name}")
-            lines.append(f"Ngày    : {pub_date}")
-            lines.append(f"Tóm tắt : {article.summary}")
-            lines.append("")
+            lines.append(f'  <article id="{i}">')
+            lines.append(f"    <title>{article.title}</title>")
+            lines.append(f"    <source>{article.source_name}</source>")
+            lines.append(f"    <published_at>{pub_date}</published_at>")
+            lines.append(f"    <summary>{article.summary}</summary>")
+            lines.append("  </article>")
+        lines.append("</category>")
 
         user_content = "\n".join(lines)
         system_prompt = MAP_PROMPT.format(category_name=category_name)
@@ -384,6 +481,7 @@ class GenerateMacroReportUseCase:
     def _format_reduce_input(
         summaries: dict[str, str],
         previous_context: str | None = None,
+        hot_keywords: list[str] | None = None,
     ) -> str:
         """Format đầu vào cho REDUCE step.
 
@@ -393,36 +491,39 @@ class GenerateMacroReportUseCase:
         Args:
             summaries: Dict category_name → tóm tắt từ MAP.
             previous_context: Nhận định phiên trước (Memory).
+            hot_keywords: Danh sách từ khóa nóng từ dữ liệu phiên hiện tại.
 
         Returns:
             Chuỗi text formatted cho REDUCE prompt.
         """
         today = date.today().strftime("%d/%m/%Y")
-        sections: list[str] = [f"📅 Ngày phân tích: {today}\n"]
+        sections: list[str] = [f"<analysis_date>{today}</analysis_date>\n"]
 
-        # ── Previous Context (Nhật ký Self-Reflection) ──
-        if previous_context:
-            sections.append("=" * 50)
+        if hot_keywords:
+            sections.append("<hot_keywords>")
+            sections.append(", ".join(hot_keywords))
+            sections.append("</hot_keywords>\n")
+
+        sections.append("<map_summaries>")
+        ordered_categories = [
+            _CATEGORY_NAMES["oil_macro"],
+            _CATEGORY_NAMES["gold"],
+            _CATEGORY_NAMES["crypto"],
+        ]
+        for category_name in ordered_categories:
+            summary = summaries.get(category_name, "")
+            sections.append(f'  <category name="{category_name}">')
             sections.append(
-                "🔄 [NHÌN LẠI QUÁ KHỨ] — Nhật ký dự báo"
-                " & Bài học của bạn từ phiên trước:"
+                summary.strip() if summary.strip() else "(Không có dữ liệu)"
             )
-            sections.append("=" * 50)
-            sections.append(previous_context)
-            sections.append("")
+            sections.append("  </category>")
+        sections.append("</map_summaries>\n")
 
-        # ── MAP Summaries ──
-        sections.append("=" * 50)
-        sections.append("📊 KẾT QUẢ PHÂN TÍCH CỤC BỘ (MAP)")
-        sections.append("=" * 50)
-
-        for name, summary in summaries.items():
-            sections.append(f"\n### 📰 {name}")
-            if summary.strip():
-                sections.append(summary.strip())
-            else:
-                sections.append("(Không có dữ liệu)")
-            sections.append("")
+        if previous_context:
+            sections.append("<previous_lessons>")
+            sections.append("🔄 [NHÌN LẠI QUÁ KHỨ]")
+            sections.append(previous_context.strip())
+            sections.append("</previous_lessons>")
 
         result = "\n".join(sections)
 

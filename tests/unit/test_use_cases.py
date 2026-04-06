@@ -35,7 +35,9 @@ def _make_article(
     """Tạo Article mẫu."""
     return Article(
         title=title,
-        summary="Summary of the article.",
+        summary=(
+            "Fed giữ nguyên lãi suất, giá vàng ổn định và Bitcoin ETF duy trì dòng vốn."
+        ),
         source_name=source,
         published_date=datetime(2026, 3, 18, 10, 0, tzinfo=UTC),
         url=f"https://example.com/{title.lower().replace(' ', '-')}",
@@ -169,6 +171,71 @@ class TestExecuteMapReduce:
         # Lần gọi cuối cùng là REDUCE
         last_call = mock_llm.analyze.call_args_list[-1]
         assert last_call[1]["system_prompt"] == REDUCE_PROMPT
+
+    def test_map_input_uses_semantic_article_tags(
+        self,
+        mock_config_reader: MagicMock,
+        mock_fetcher: MagicMock,
+    ) -> None:
+        """MAP input phải dùng thẻ <article> để giảm nhiễu parser."""
+        mock_llm = MagicMock()
+        mock_llm.supports_concurrency = False
+        mock_llm.analyze.side_effect = [
+            "- MAP Oil",
+            "- MAP Gold",
+            "- MAP Crypto",
+            "## 6. 📋 Tổng kết\n- Kết luận",
+        ]
+
+        use_case = GenerateMacroReportUseCase(
+            config_reader=mock_config_reader,
+            news_fetcher=mock_fetcher,
+            llm_client=mock_llm,
+        )
+        use_case.execute()
+
+        first_map_call = mock_llm.analyze.call_args_list[0]
+        map_user_content = first_map_call[1]["user_content"]
+        assert "<article id=" in map_user_content
+        assert "<summary>" in map_user_content
+        assert "</category>" in map_user_content
+
+    def test_reduce_input_contains_previous_lessons_tag(self) -> None:
+        """REDUCE input phải chứa thẻ previous_lessons khi memory trả dữ liệu."""
+        mock_config = MagicMock()
+        mock_config.get_sources.return_value = {
+            SourceCategory.OIL_MACRO: [
+                _make_source("Reuters", "https://reuters.com/rss")
+            ],
+        }
+
+        mock_fetcher = MagicMock()
+        mock_fetcher.fetch_news.return_value = [_make_article(title="Fed Policy")]
+
+        mock_llm = MagicMock()
+        mock_llm.supports_concurrency = False
+        mock_llm.analyze.side_effect = [
+            "- MAP Oil",
+            "## 6. 📋 Tổng kết\n- Kết luận",
+        ]
+
+        mock_memory = MagicMock()
+        mock_memory.retrieve_last_context.return_value = "Bài học hôm trước"
+        mock_memory.retrieve_related_context.return_value = "Bài học cùng mẫu hình Fed"
+
+        use_case = GenerateMacroReportUseCase(
+            config_reader=mock_config,
+            news_fetcher=mock_fetcher,
+            llm_client=mock_llm,
+            memory_manager=mock_memory,
+        )
+        use_case.execute()
+
+        mock_memory.retrieve_related_context.assert_called_once()
+        reduce_call = mock_llm.analyze.call_args_list[-1]
+        reduce_user_content = reduce_call[1]["user_content"]
+        assert "<previous_lessons>" in reduce_user_content
+        assert "[BÀI HỌC LIÊN QUAN]" in reduce_user_content
 
 
 # ─────────────────────────────────────────────────────────────

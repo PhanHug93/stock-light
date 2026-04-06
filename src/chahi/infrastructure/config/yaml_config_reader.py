@@ -29,7 +29,7 @@ _PROVIDER_DEFAULTS: dict[str, dict[str, str]] = {
     "gemini": {
         "api_base": "",
         "api_key": "",
-        "model_name": "gemini-2.0-flash",
+        "model_name": "gemini-3.1-pro",
     },
     "lm_studio": {
         "api_base": "http://localhost:1234/v1",

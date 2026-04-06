@@ -188,6 +188,26 @@ class IMemoryManager(ABC):
             RuntimeError: Khi không thể lưu được (disk full, MCP down, ...).
         """
 
+    def retrieve_related_context(
+        self,
+        hot_keywords: list[str],
+        max_results: int = 3,
+    ) -> str | None:  # noqa: B027
+        """Truy xuất bài học liên quan theo ngữ nghĩa (semantic retrieval).
+
+        Mặc định không bắt buộc backend nào cũng hỗ trợ; các backend
+        có khả năng semantic search (vd: MCP/Vector DB) nên override.
+
+        Args:
+            hot_keywords: Danh sách từ khóa nóng trích từ dữ liệu phiên hiện tại.
+            max_results: Số đoạn context tối đa cần lấy.
+
+        Returns:
+            Chuỗi context liên quan, hoặc None nếu backend không hỗ trợ
+            hoặc không tìm thấy dữ liệu phù hợp.
+        """
+        return None
+
     def close(self) -> None:  # noqa: B027
         """Giải phóng tài nguyên (HTTP sessions, connections)."""
 
