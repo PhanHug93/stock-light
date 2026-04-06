@@ -9,7 +9,7 @@ Usage:
     python main.py
     python main.py --config path/to/config.yaml
     python main.py --output-dir ./my-reports
-    python main.py --provider openai --api-key "$OPENAI_API_KEY" --model gpt-4o-mini
+    python main.py --provider openai --api-key "$OPENAI_API_KEY" --model gpt-5.4
 """
 
 from __future__ import annotations
@@ -48,7 +48,7 @@ _LLM_PROVIDER_DEFAULTS: dict[str, dict[str, str]] = {
     "openai": {
         "api_base": "https://api.openai.com/v1",
         "api_key": "",
-        "model_name": "gpt-4o-mini",
+        "model_name": "gpt-5.4",
     },
     "lm_studio": {
         "api_base": "http://localhost:1234/v1",

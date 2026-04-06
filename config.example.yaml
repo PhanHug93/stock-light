@@ -47,7 +47,7 @@ llm_settings:
 
   # ── OpenAI (cloud) — đổi provider: "openai" ──
   # api_key: "sk-..."
-  # model_name: "gpt-4o-mini"
+  # model_name: "gpt-5.4"
   # api_base: "https://api.openai.com/v1"   # optional
 
   # ── LM Studio (local) — đổi provider: "lm_studio" ──

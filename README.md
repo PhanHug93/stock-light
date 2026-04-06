@@ -135,7 +135,7 @@ llm_settings:
   timeout: 120                        # Tăng 300-600 cho model 70B+
 ```
 
-- OpenAI: `provider: "openai"`, `api_key: "sk-..."`, `model_name: "gpt-4o-mini"`
+- OpenAI: `provider: "openai"`, `api_key: "sk-..."`, `model_name: "gpt-5.4"`
 - LM Studio: `provider: "lm_studio"`, `api_base: "http://localhost:1234/v1"`
 
 ### 🧠 Memory (Bộ nhớ dài hạn)
@@ -208,7 +208,7 @@ Không cần sửa `config.yaml`, có thể override trực tiếp bằng comman
 
 ```bash
 # Dùng OpenAI ngay từ CLI
-python main.py --provider openai --api-key "$OPENAI_API_KEY" --model gpt-4o-mini
+python main.py --provider openai --api-key "$OPENAI_API_KEY" --model gpt-5.4
 
 # Dùng Gemini (mặc định)
 python main.py --provider gemini --api-key "$GEMINI_API_KEY" --model gemini-2.0-flash
