@@ -10,6 +10,7 @@ Usage:
     python main.py --config path/to/config.yaml
     python main.py --output-dir ./my-reports
     python main.py --provider openai --api-key "$OPENAI_API_KEY" --model gpt-5.4
+    python main.py --dump-llm-input-dir ./llm_inputs
 """
 
 from __future__ import annotations
@@ -166,6 +167,15 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help="Chỉ gửi notification qua Discord.",
+    )
+    parser.add_argument(
+        "--dump-llm-input-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Dump input (system prompt + user content) trước mỗi lần gọi LLM "
+            "vào thư mục chỉ định."
+        ),
     )
 
     llm_group = parser.add_argument_group("LLM overrides")
@@ -472,6 +482,14 @@ def main() -> None:
     # ── 2. Khởi tạo dependencies (Strategy Pattern + Memory) ──
     news_fetcher = RSSNewsFetcher(source_name="RSS")
     llm_client = create_llm_client(settings=llm_settings)
+    if args.dump_llm_input_dir is not None:
+        from chahi.infrastructure.llm.recording_client import RecordingLLMClient
+
+        llm_client = RecordingLLMClient(
+            delegate=llm_client,
+            dump_dir=args.dump_llm_input_dir,
+        )
+        logger.info("LLM input dump enabled: %s", args.dump_llm_input_dir.resolve())
 
     memory_settings = config_reader.get_memory_settings()
     memory_manager = create_memory_manager(settings=memory_settings)

@@ -219,6 +219,18 @@ python main.py --provider lm_studio --api-base http://localhost:1234/v1 --api-ke
 
 `--provider` sẽ reset default theo provider đã chọn, sau đó áp dụng các override cụ thể (`--api-key`, `--model`, `--api-base`, `--temperature`, `--timeout`).
 
+### Dump input trước khi gọi provider
+
+Khi provider lỗi (429/quota/timeout), có thể dump toàn bộ input để tự request nơi khác:
+
+```bash
+python main.py --provider openai --dump-llm-input-dir ./llm_inputs
+```
+
+Mỗi lần gọi LLM sẽ tạo một file `.md` chứa:
+- `System Prompt`
+- `User Content`
+
 ### Chọn kênh gửi notification
 
 `--telegram` / `--discord` hoạt động ở cả 2 mode:
