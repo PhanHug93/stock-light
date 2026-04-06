@@ -54,6 +54,12 @@ class TestOpenAIClientAnalyze:
             timeout=120,
         )
 
+    def test_supports_concurrency_is_false(self, settings: LLMSettings) -> None:
+        """OpenAI client phải chạy MAP tuần tự để giảm nguy cơ 429."""
+        with patch("chahi.infrastructure.llm.openai_client.openai.OpenAI"):
+            client = OpenAIClient(settings=settings)
+        assert client.supports_concurrency is False
+
     @patch("chahi.infrastructure.llm.openai_client.openai.OpenAI")
     def test_empty_api_key_uses_env_fallback(self, mock_openai_cls: MagicMock) -> None:
         """api_key rỗng phải để OpenAI SDK fallback sang env var."""
@@ -162,4 +168,71 @@ class TestOpenAIClientErrors:
 
         client = OpenAIClient(settings=settings)
         with pytest.raises(RuntimeError, match="rỗng"):
+            client.analyze(system_prompt="s", user_content="u")
+
+    @patch("chahi.infrastructure.llm.openai_client.openai.OpenAI")
+    @patch("chahi.infrastructure.llm.openai_client.time.sleep")
+    def test_rate_limit_retries_then_success(
+        self,
+        mock_sleep: MagicMock,
+        mock_openai_cls: MagicMock,
+        settings: LLMSettings,
+    ) -> None:
+        """Rate-limit tạm thời phải retry backoff rồi thành công."""
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+
+        mock_response = MagicMock()
+        mock_response.status_code = 429
+        mock_response.json.return_value = {"error": {"message": "rate limited"}}
+        rate_limit_exc = openai.RateLimitError(
+            message="rate limited",
+            response=mock_response,
+            body={"error": {"message": "rate limited"}},
+        )
+
+        success_response = _make_mock_response(content="ok")
+        mock_client.chat.completions.create.side_effect = [
+            rate_limit_exc,
+            success_response,
+        ]
+
+        client = OpenAIClient(settings=settings)
+        result = client.analyze(system_prompt="s", user_content="u")
+
+        assert result == "ok"
+        assert mock_sleep.call_count == 1
+
+    @patch("chahi.infrastructure.llm.openai_client.openai.OpenAI")
+    def test_insufficient_quota_message(
+        self, mock_openai_cls: MagicMock, settings: LLMSettings
+    ) -> None:
+        """insufficient_quota phải báo rõ khác biệt ChatGPT Plus/API."""
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+
+        mock_response = MagicMock()
+        mock_response.status_code = 429
+        mock_response.json.return_value = {
+            "error": {
+                "code": "insufficient_quota",
+                "message": "You exceeded your current quota",
+            }
+        }
+        mock_client.chat.completions.create.side_effect = openai.RateLimitError(
+            message="quota exceeded",
+            response=mock_response,
+            body={
+                "error": {
+                    "code": "insufficient_quota",
+                    "message": "You exceeded your current quota",
+                }
+            },
+        )
+
+        client = OpenAIClient(settings=settings)
+        with pytest.raises(
+            RuntimeError,
+            match="ChatGPT Plus không bao gồm API credits",
+        ):
             client.analyze(system_prompt="s", user_content="u")
