@@ -31,10 +31,7 @@ class CaptureOnlyLLMClient(ILLMClient):
 
     def analyze(self, system_prompt: str, user_content: str) -> str:
         file_path = self._dump_input(system_prompt, user_content)
-        return (
-            "[CAPTURE_ONLY] Đã lưu input, không gọi provider API. "
-            f"File: {file_path}"
-        )
+        return f"[CAPTURE_ONLY] Đã lưu input, không gọi provider API. File: {file_path}"
 
     def _dump_input(self, system_prompt: str, user_content: str) -> Path:
         with self._lock:
