@@ -34,6 +34,7 @@ _HOT_KEYWORDS: dict[str, int] = {
 # Domain policy cơ bản cho deep scrape.
 _BLOCKED_PATHS: tuple[str, ...] = ("/video/", "/videos/", "/podcast/")
 _PAYWALL_DOMAINS: set[str] = {"wsj.com", "bloomberg.com"}
+_BLOCKED_HOST_SUFFIXES: tuple[str, ...] = ("news.google.com",)
 
 
 def canonicalize_url(url: str) -> str:
@@ -67,6 +68,12 @@ def is_allowed_by_policy(url: str) -> bool:
         parsed = urlparse(url)
         host = (parsed.hostname or "").lower()
         path = parsed.path.lower()
+
+        if any(
+            host == blocked or host.endswith("." + blocked)
+            for blocked in _BLOCKED_HOST_SUFFIXES
+        ):
+            return False
 
         # Chặn video/podcast paths
         if any(
