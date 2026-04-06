@@ -1,6 +1,6 @@
 # 📊 ChaHi — Macro Report Generator
 
-CLI tool phân tích tin tức tài chính vĩ mô (**Dầu · Vàng · Crypto**) thông qua Local LLM hoặc Google Gemini. Tự động cào tin RSS, tổng hợp dữ liệu, và xuất báo cáo Markdown chuyên sâu — chạy hoàn toàn trên máy cá nhân.
+CLI tool phân tích tin tức tài chính vĩ mô (**Dầu · Vàng · Crypto**) qua **Gemini / OpenAI / LM Studio**. Tự động cào RSS, tổng hợp dữ liệu, xuất báo cáo Markdown chuyên sâu, và hỗ trợ mode dump input để request ở hệ thống khác.
 
 ```
    _____ _           _    _ _
@@ -21,10 +21,11 @@ CLI tool phân tích tin tức tài chính vĩ mô (**Dầu · Vàng · Crypto**
 | 🥇 **Vàng** | Theo dõi DXY, lợi suất trái phiếu, dòng tiền ETF |
 | ₿ **Crypto** | BTC/ETH, tin pháp lý, dòng tiền tổ chức |
 | 🔄 **Long-term Memory** | Đối chiếu nhận định qua các phiên (File / MCP Server) |
-| 🤖 **Đa nền tảng LLM** | LM Studio (local) hoặc Google Gemini (cloud) |
+| 🤖 **Đa nền tảng LLM** | Gemini (mặc định), OpenAI, LM Studio |
 | 🔌 **Dual-Protocol MCP** | Custom REST hoặc JSON-RPC SSE bridge chuẩn |
 | 📝 **Markdown Output** | Báo cáo 6 mục với cấu trúc chuyên sâu |
 | 📢 **Notifications** | Tự động gửi báo cáo qua Telegram & Discord (Composite Pattern) |
+| 📦 **Fallback Export** | Dump input trước khi gọi LLM, chạy capture-only không phụ thuộc provider |
 
 ---
 
@@ -40,12 +41,28 @@ Clean Architecture + SOLID + Dependency Injection
 │  entities.py  │  interfaces.py  │  use_cases.py          │
 ├──────────────────────────────────────────────────────────┤
 │                 infrastructure/ (I/O)                    │
-│  config/   │  llm/     │  rss/    │ memory/  │ notifiers/│
-│  YamlConfig│ LMStudio  │ RSS     │ File     │ Telegram  │
-│            │ Gemini    │ Fetcher │ MCP(HTTP)│ Discord   │
-│            │           │         │          │ Manager   │
+│  config/   │  llm/        │  rss/    │ memory/     │ notify│
+│  YamlConfig│ Gemini/OpenAI│ RSS      │ File/MCP    │ TG/DC │
+│            │ LMStudio     │ Fetcher  │ ReadOnly    │ Attach│
+│            │ Capture/Dump │          │             │       │
 └──────────────────────────────────────────────────────────┘
 ```
+
+### Nguyên tắc code (Senior checklist)
+
+- `core/` chỉ chứa domain logic và interfaces; không import trực tiếp hạ tầng.
+- `infrastructure/` implement adapters theo interface; thay provider bằng factory, không sửa use case.
+- Ưu tiên fail-safe: notifier lỗi không làm sập pipeline; memory lỗi degrade có kiểm soát.
+- Mọi mode fallback/debug (`dump`, `capture-only`, `no-memory-store`) phải tách rõ khỏi luồng chuẩn.
+- Mỗi thay đổi phải qua `ruff` + `pytest` trước khi push.
+
+### Tổ chức source (đã rà soát)
+
+- `src/chahi/core`: entities + interfaces + use case orchestration.
+- `src/chahi/infrastructure/llm`: provider clients (`gemini`, `openai`, `lm_studio`) + wrappers (`recording`, `capture-only`) + `llm_factory`.
+- `src/chahi/infrastructure/memory`: backends (`file`, `mcp`) + `read_only_memory_manager`.
+- `src/chahi/infrastructure/notifiers`: telegram/discord adapters, manager composite, factory.
+- `main.py`: composition root cho CLI flags, wiring dependencies, và runtime modes.
 
 ---
 
@@ -394,19 +411,23 @@ stock-light/
 │       │   ├── lm_studio_client.py     # OpenAI-compatible
 │       │   ├── gemini_client.py        # Google Gemini
 │       │   ├── openai_client.py        # OpenAI API
+│       │   ├── recording_client.py     # Dump input + gọi provider thật
+│       │   ├── capture_only_client.py  # Dump input only, không gọi provider
+│       │   ├── token_counter.py        # Provider-aware token budget
 │       │   └── llm_factory.py          # Strategy Pattern
 │       ├── rss/
 │       │   └── rss_fetcher.py          # RSS + BeautifulSoup
 │       ├── memory/
 │       │   ├── file_memory_manager.py  # File fallback
 │       │   ├── mcp_memory_manager.py   # HTTP: REST + JSON-RPC SSE
+│       │   ├── read_only_memory_manager.py # Disable save_context khi fallback
 │       │   └── memory_factory.py       # Factory dispatch
 │       └── notifiers/
 │           ├── telegram_notifier.py    # Telegram Bot API (auto-split 4096 chars)
-│           ├── discord_notifier.py     # Discord Webhook (auto-split 2000 chars)
+│           ├── discord_notifier.py     # Discord text split + file attachment
 │           ├── notification_manager.py # Composite Pattern (fail-safe)
 │           └── notifier_factory.py     # Factory dispatch
-└── tests/unit/                         # 200+ tests
+└── tests/unit/                         # 230+ tests
 ```
 
 ---
