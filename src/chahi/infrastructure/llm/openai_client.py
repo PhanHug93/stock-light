@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -34,7 +35,15 @@ class OpenAIClient(ILLMClient):
         self._settings = settings
         self._timeout = settings.timeout
 
-        api_key = settings.api_key.strip() or None
+        api_key = settings.api_key.strip() or os.getenv("OPENAI_API_KEY", "").strip()
+        if not api_key:
+            msg = (
+                "Thiếu OpenAI API key: truyền `llm_settings.api_key`, "
+                "hoặc export biến môi trường OPENAI_API_KEY."
+            )
+            logger.error(msg)
+            raise ValueError(msg)
+
         api_base = settings.api_base.strip() or self._DEFAULT_API_BASE
 
         client_kwargs: dict[str, Any] = {
