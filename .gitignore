@@ -31,3 +31,8 @@ reports/
 .cache/
 .gemini/
 repomix-output.xml
+
+# Generated markdown artifacts (runtime/task outputs)
+implementation_plan.md
+llm_input_*.md
+llm_inputs/
