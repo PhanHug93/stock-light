@@ -224,12 +224,19 @@ python main.py --provider lm_studio --api-base http://localhost:1234/v1 --api-ke
 Khi provider lỗi (429/quota/timeout), có thể dump toàn bộ input để tự request nơi khác:
 
 ```bash
-python main.py --provider openai --dump-llm-input-dir ./llm_inputs
+python main.py --provider openai --dump-llm-input-dir ./llm_inputs --no-memory-store
 ```
 
 Mỗi lần gọi LLM sẽ tạo một file `.md` chứa:
 - `System Prompt`
 - `User Content`
+
+Bạn vẫn có thể gửi notification như bình thường, nhưng không lưu memory mới:
+
+```bash
+python main.py --provider openai --dump-llm-input-dir ./llm_inputs --no-memory-store --telegram
+python main.py --provider openai --dump-llm-input-dir ./llm_inputs --no-memory-store --discord
+```
 
 ### Chọn kênh gửi notification
 
