@@ -14,6 +14,8 @@ import requests
 from chahi.core.interfaces import INotifier
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from chahi.core.entities import NotificationSettings
 
 logger = logging.getLogger(__name__)
@@ -75,6 +77,43 @@ class DiscordNotifier(INotifier):
         """Gửi một phần text."""
         payload: dict[str, Any] = {"content": text}
         return self._post(payload, f"text {part}/{total}")
+
+    def send_file_attachment(self, file_path: Path, comment: str | None = None) -> bool:
+        """Gửi file attachment qua Discord webhook.
+
+        Args:
+            file_path: Đường dẫn file cần gửi.
+            comment: Nội dung text đi kèm file (optional).
+
+        Returns:
+            True nếu gửi thành công, False nếu thất bại.
+        """
+        if not file_path.exists() or not file_path.is_file():
+            logger.warning("Discord attachment không tồn tại: %s", file_path)
+            return False
+
+        try:
+            with file_path.open("rb") as f:
+                response = requests.post(
+                    self._webhook_url,
+                    data={"content": comment or f"📎 {file_path.name}"},
+                    files={"file": (file_path.name, f, "text/markdown")},
+                    timeout=30,
+                )
+
+            if response.status_code in (200, 204):
+                logger.info("  Discord: gửi file thành công (%s)", file_path.name)
+                return True
+
+            logger.warning(
+                "Discord file upload error: status=%d, body=%s",
+                response.status_code,
+                response.text[:200],
+            )
+            return False
+        except requests.RequestException as exc:
+            logger.warning("Discord gửi file thất bại: %s", exc)
+            return False
 
     def _post(self, payload: dict[str, Any], label: str) -> bool:
         """HTTP POST tới Discord webhook."""

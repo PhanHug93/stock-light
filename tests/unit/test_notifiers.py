@@ -248,6 +248,62 @@ class TestDiscordSplit:
         assert "".join(chunks) == text
 
 
+class TestDiscordAttachment:
+    """Test gửi file attachment qua Discord webhook."""
+
+    @pytest.fixture()
+    def notifier(self) -> DiscordNotifier:
+        settings = NotificationSettings(
+            type="discord",
+            enabled=True,
+            webhook_url="https://discord.com/api/webhooks/123/abc",
+        )
+        return DiscordNotifier(settings)
+
+    @patch("chahi.infrastructure.notifiers.discord_notifier.requests.post")
+    def test_send_file_attachment_success(
+        self,
+        mock_post: MagicMock,
+        notifier: DiscordNotifier,
+        tmp_path,
+    ) -> None:
+        file_path = tmp_path / "dump.md"
+        file_path.write_text("# dump", encoding="utf-8")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 204
+        mock_post.return_value = mock_response
+
+        ok = notifier.send_file_attachment(file_path=file_path)
+        assert ok is True
+        assert mock_post.call_count == 1
+
+    def test_send_file_attachment_missing_file_returns_false(
+        self,
+        notifier: DiscordNotifier,
+        tmp_path,
+    ) -> None:
+        missing = tmp_path / "missing.md"
+        ok = notifier.send_file_attachment(file_path=missing)
+        assert ok is False
+
+    @patch("chahi.infrastructure.notifiers.discord_notifier.requests.post")
+    def test_send_file_attachment_network_error_returns_false(
+        self,
+        mock_post: MagicMock,
+        notifier: DiscordNotifier,
+        tmp_path,
+    ) -> None:
+        import requests as req
+
+        file_path = tmp_path / "dump.md"
+        file_path.write_text("# dump", encoding="utf-8")
+        mock_post.side_effect = req.ConnectionError("Network down")
+
+        ok = notifier.send_file_attachment(file_path=file_path)
+        assert ok is False
+
+
 # ═════════════════════════════════════════════════════════════
 # Notifier Factory
 # ═════════════════════════════════════════════════════════════
