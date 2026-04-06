@@ -128,7 +128,7 @@ class TestLLMSettings:
             provider="openai",
             api_base="https://api.openai.com/v1",
             api_key="sk-test",
-            model_name="gpt-4o-mini",
+            model_name="gpt-5.4",
         )
         assert llm.provider == "openai"
 

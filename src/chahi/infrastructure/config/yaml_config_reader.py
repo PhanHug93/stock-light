@@ -39,7 +39,7 @@ _PROVIDER_DEFAULTS: dict[str, dict[str, str]] = {
     "openai": {
         "api_base": "https://api.openai.com/v1",
         "api_key": "",
-        "model_name": "gpt-4o-mini",
+        "model_name": "gpt-5.4",
     },
 }
 

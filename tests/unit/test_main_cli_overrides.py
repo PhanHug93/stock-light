@@ -56,7 +56,7 @@ class TestApplyLlmCliOverrides:
         assert updated.provider == "openai"
         assert updated.api_base == "https://api.openai.com/v1"
         assert updated.api_key == ""
-        assert updated.model_name == "gpt-4o-mini"
+        assert updated.model_name == "gpt-5.4"
 
     def test_switch_to_openai_with_custom_overrides(self) -> None:
         settings = LLMSettings(

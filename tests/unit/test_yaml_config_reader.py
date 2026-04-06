@@ -277,7 +277,7 @@ class TestGetLLMSettings:
         assert llm.provider == "openai"
         assert llm.api_base == "https://api.openai.com/v1"
         assert llm.api_key == ""
-        assert llm.model_name == "gpt-4o-mini"
+        assert llm.model_name == "gpt-5.4"
 
     def test_provider_is_case_insensitive(self, tmp_path: Path) -> None:
         """Provider viết hoa/thường lẫn nhau vẫn parse đúng."""

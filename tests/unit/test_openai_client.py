@@ -18,7 +18,7 @@ def settings() -> LLMSettings:
         provider="openai",
         api_base="https://api.openai.com/v1",
         api_key="sk-test",
-        model_name="gpt-4o-mini",
+        model_name="gpt-5.4",
         temperature=0.2,
     )
 
@@ -61,7 +61,7 @@ class TestOpenAIClientAnalyze:
             provider="openai",
             api_base="https://api.openai.com/v1",
             api_key="   ",
-            model_name="gpt-4o-mini",
+            model_name="gpt-5.4",
         )
         OpenAIClient(settings=empty_key_settings)
 
@@ -87,7 +87,7 @@ class TestOpenAIClientAnalyze:
 
         assert result == "# Report\nNội dung"
         mock_client.chat.completions.create.assert_called_once_with(
-            model="gpt-4o-mini",
+            model="gpt-5.4",
             messages=[
                 {"role": "system", "content": "sys"},
                 {"role": "user", "content": "user"},
