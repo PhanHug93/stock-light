@@ -238,9 +238,11 @@ class TestAnalysisContext:
         """total_articles phải tính tổng chính xác."""
         ctx = AnalysisContext(
             date=date(2026, 3, 18),
-            oil_news=[sample_article, sample_article],
-            gold_news=[sample_article],
-            crypto_news=[],
+            news_by_category={
+                SourceCategory.OIL_MACRO: [sample_article, sample_article],
+                SourceCategory.GOLD: [sample_article],
+                SourceCategory.CRYPTO: [],
+            },
         )
         assert ctx.total_articles == 3
 
@@ -253,7 +255,7 @@ class TestAnalysisContext:
         """is_empty phải trả về False khi có bài viết."""
         ctx = AnalysisContext(
             date=date(2026, 3, 18),
-            oil_news=[sample_article],
+            news_by_category={SourceCategory.OIL_MACRO: [sample_article]},
         )
         assert ctx.is_empty is False
 
@@ -261,7 +263,7 @@ class TestAnalysisContext:
         """Không thể reassign attribute (frozen)."""
         ctx = AnalysisContext(
             date=date(2026, 3, 18),
-            oil_news=[sample_article],
+            news_by_category={SourceCategory.OIL_MACRO: [sample_article]},
         )
         with pytest.raises(AttributeError):
             ctx.date = date(2026, 1, 1)  # type: ignore[misc]

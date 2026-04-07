@@ -109,6 +109,15 @@ class INewsFetcher(ABC):
             ValueError: Khi dữ liệu trả về không parse được.
         """
 
+    @property
+    def supports_batch(self) -> bool:
+        """Cho biết fetcher có hỗ trợ ``fetch_many()`` tối ưu hay không.
+
+        Override thành ``True`` khi implementation cung cấp
+        async/batch I/O thay vì fallback tuần tự mặc định.
+        """
+        return False
+
     def fetch_many(
         self,
         tasks: list[tuple[SourceCategory, SourceConfig]],
@@ -259,4 +268,58 @@ class INotifier(ABC):
 
         Returns:
             True nếu gửi thành công, False nếu thất bại.
+        """
+
+
+class IMarketDataProvider(ABC):
+    """Contract cho component lấy dữ liệu thị trường định lượng.
+
+    Cung cấp giá cả, khối lượng, và chỉ số kinh tế vĩ mô
+    cho Feature Engineering Layer trong Quant-Lite pipeline.
+
+    Implementation có thể dùng: yfinance, FireAnt API, TCBS API,
+    hoặc MockProvider cho testing.
+    """
+
+    @abstractmethod
+    def get_price(self, symbol: str) -> dict[str, float]:
+        """Lấy giá hiện tại của symbol.
+
+        Args:
+            symbol: Mã chứng khoán/commodity (vd: "CL=F", "DX-Y.NYB").
+
+        Returns:
+            Dict chứa ít nhất ``{"close": float}``.
+            Có thể bao gồm thêm ``open``, ``high``, ``low``.
+
+        Raises:
+            ConnectionError: Khi không kết nối được API.
+            ValueError: Khi symbol không hợp lệ.
+        """
+
+    @abstractmethod
+    def get_ohlcv(
+        self,
+        symbol: str,
+        period: str = "5d",
+    ) -> list[dict[str, float]]:
+        """Lấy dữ liệu OHLCV lịch sử.
+
+        Args:
+            symbol: Mã chứng khoán/commodity.
+            period: Khoảng thời gian (vd: "5d", "1mo", "3mo").
+
+        Returns:
+            List các dict ``{"date", "open", "high", "low", "close", "volume"}``.
+        """
+
+    @abstractmethod
+    def get_macro(self, key: str) -> float:
+        """Lấy chỉ số kinh tế vĩ mô.
+
+        Args:
+            key: Tên chỉ số (vd: "us10y_yield", "dxy", "oil_brent").
+
+        Returns:
+            Giá trị hiện tại của chỉ số.
         """

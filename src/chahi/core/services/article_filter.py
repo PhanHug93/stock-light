@@ -117,29 +117,16 @@ class ArticleFilterService:
         self._similarity_threshold = similarity_threshold
 
     def filter_context(self, context: AnalysisContext) -> AnalysisContext:
-        """Lọc toàn bộ AnalysisContext theo 3 category."""
-        oil_filtered, oil_stats = self.filter_articles(
-            SourceCategory.OIL_MACRO,
-            list(context.oil_news),
-        )
-        gold_filtered, gold_stats = self.filter_articles(
-            SourceCategory.GOLD,
-            list(context.gold_news),
-        )
-        crypto_filtered, crypto_stats = self.filter_articles(
-            SourceCategory.CRYPTO,
-            list(context.crypto_news),
-        )
-
-        self._log_stats("OIL_MACRO", oil_stats)
-        self._log_stats("GOLD", gold_stats)
-        self._log_stats("CRYPTO", crypto_stats)
+        """Lọc toàn bộ AnalysisContext theo tất cả categories."""
+        filtered_map: dict[SourceCategory, list[Article]] = {}
+        for category, articles in context.news_by_category.items():
+            filtered, stats = self.filter_articles(category, list(articles))
+            filtered_map[category] = filtered
+            self._log_stats(category.name, stats)
 
         return AnalysisContext(
             date=context.date,
-            oil_news=oil_filtered,
-            gold_news=gold_filtered,
-            crypto_news=crypto_filtered,
+            news_by_category=filtered_map,
             previous_context=context.previous_context,
         )
 
@@ -284,9 +271,8 @@ class ArticleFilterService:
         context: AnalysisContext,
     ) -> list[tuple[SourceCategory, list[Article]]]:
         return [
-            (SourceCategory.OIL_MACRO, list(context.oil_news)),
-            (SourceCategory.GOLD, list(context.gold_news)),
-            (SourceCategory.CRYPTO, list(context.crypto_news)),
+            (category, list(articles))
+            for category, articles in context.news_by_category.items()
         ]
 
     @staticmethod

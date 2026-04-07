@@ -12,7 +12,8 @@ from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
 from chahi.core.entities import SourceCategory, SourceConfig
-from chahi.core.use_cases import GenerateMacroReportUseCase, _extract_summary
+from chahi.core.services.report_parser import extract_summary
+from chahi.core.use_cases import GenerateMacroReportUseCase
 from chahi.infrastructure.memory.file_memory_manager import FileMemoryManager
 
 if TYPE_CHECKING:
@@ -88,44 +89,44 @@ Nội dung...
 - Vàng giảm nhẹ
 - Crypto sideway
 """
-        result = _extract_summary(report)
+        result = extract_summary(report)
         assert "Dầu tăng 3%" in result
         assert "Vàng giảm nhẹ" in result
 
     def test_fallback_when_no_summary(self) -> None:
         """Không có section Tổng kết → lấy 500 chars cuối."""
         report = "Nội dung ngắn gọn không có section tổng kết."
-        result = _extract_summary(report)
+        result = extract_summary(report)
         assert result == report.strip()
 
     def test_fallback_long_report(self) -> None:
         """Report dài không có Tổng kết → lấy 500 chars cuối."""
         report = "A" * 1000
-        result = _extract_summary(report)
+        result = extract_summary(report)
         assert len(result) == 500
 
     def test_matches_without_emoji(self) -> None:
         """Regex phải match khi LLM quên emoji 📋."""
         report = "## 6. Tổng kết\n- Dầu tăng"
-        result = _extract_summary(report)
+        result = extract_summary(report)
         assert "Dầu tăng" in result
 
     def test_matches_different_numbering(self) -> None:
         """Regex phải match với format 'Phần 6:' hoặc '6.'."""
         report = "## Tổng Kết\n- Vàng giảm nhẹ"
-        result = _extract_summary(report)
+        result = extract_summary(report)
         assert "Vàng giảm" in result
 
     def test_matches_uppercase(self) -> None:
         """Regex phải match 'TỔNG KẾT' (nhưng giữ case-sensitive vì có [Tt][Kk])."""
         report = "## 6. 📋 Tổng kết — Nhận định\n- Crypto sideway"
-        result = _extract_summary(report)
+        result = extract_summary(report)
         assert "Crypto sideway" in result
 
     def test_matches_no_number(self) -> None:
         """Regex phải match khi không có số thứ tự."""
         report = "## 📋 Tổng kết\n- BTC giảm 5%"
-        result = _extract_summary(report)
+        result = extract_summary(report)
         assert "BTC giảm 5%" in result
 
 
@@ -152,6 +153,7 @@ class TestFeedbackLoop:
             SourceCategory.CRYPTO: [],
         }
         mock_fetcher = MagicMock()
+        mock_fetcher.supports_batch = False
         mock_fetcher.fetch_news.return_value = [
             MagicMock(
                 title="Test",
@@ -182,7 +184,7 @@ class TestFeedbackLoop:
 
         # Kiểm tra context cũ xuất hiện trong user_content
         actual_content = mock_llm.analyze.call_args[1]["user_content"]
-        assert "NHÌN LẠI QUÁ KHỨ" in actual_content
+        assert "<previous_lessons>" in actual_content
         assert "Hôm qua: Dầu tăng mạnh" in actual_content
 
     def test_stores_summary_after_report(self) -> None:
@@ -192,6 +194,7 @@ class TestFeedbackLoop:
             SourceCategory.OIL_MACRO: [_make_source()],
         }
         mock_fetcher = MagicMock()
+        mock_fetcher.supports_batch = False
         mock_fetcher.fetch_news.return_value = [
             MagicMock(
                 title="Test",
@@ -229,6 +232,7 @@ class TestFeedbackLoop:
             SourceCategory.OIL_MACRO: [_make_source()],
         }
         mock_fetcher = MagicMock()
+        mock_fetcher.supports_batch = False
         mock_fetcher.fetch_news.return_value = [
             MagicMock(
                 title="Test",
