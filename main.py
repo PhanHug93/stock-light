@@ -30,9 +30,14 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
+from chahi.core.services.article_filter import ArticleFilterService
+from chahi.core.services.divergence_engine import DivergenceEngine
+from chahi.core.services.feature_engine import FeatureEngine
+from chahi.core.services.rule_engine import RuleEngine
 from chahi.core.use_cases import GenerateMacroReportUseCase
 from chahi.infrastructure.config.yaml_config_reader import YamlConfigReader
 from chahi.infrastructure.llm.llm_factory import create_llm_client
+from chahi.infrastructure.market.mock_market_provider import MockMarketDataProvider
 from chahi.infrastructure.memory.memory_factory import create_memory_manager
 from chahi.infrastructure.notifiers.notifier_factory import create_notification_manager
 from chahi.infrastructure.rss.rss_fetcher import RSSNewsFetcher
@@ -565,24 +570,33 @@ def main() -> None:
     logger.info("Token counter: provider=%s", tokenizer_provider)
 
     # ── 2. Khởi tạo dependencies (Strategy Pattern + Memory) ──
+    debug_settings = config_reader.get_debug_settings()
     news_fetcher = RSSNewsFetcher(source_name="RSS")
-    dump_dir = args.dump_llm_input_dir
-    if args.dump_llm_input_only and dump_dir is None:
-        dump_dir = Path("./llm_inputs")
 
-    if args.dump_llm_input_only:
+    dump_dir: Path | None = args.dump_llm_input_dir
+    if dump_dir is None and "dump_llm_input_dir" in debug_settings:
+        dump_dir = Path(debug_settings["dump_llm_input_dir"])
+
+    dump_llm_input_only = args.dump_llm_input_only or debug_settings.get(
+        "dump_llm_input_only", False
+    )
+
+    if dump_llm_input_only:
         from chahi.infrastructure.llm.capture_only_client import CaptureOnlyLLMClient
 
         if dump_dir is None:
-            logger.error("✗ dump_dir không hợp lệ cho --dump-llm-input-only")
-            sys.exit(1)
+            # Fallback cuối cùng nếu cả CLI và config đều không có
+            dump_dir = Path("./llm_inputs")
+            logger.warning("Không có dump_dir, sử dụng mặc định: %s", dump_dir)
 
+        dump_dir.mkdir(parents=True, exist_ok=True)
         llm_client = CaptureOnlyLLMClient(dump_dir=dump_dir)
         logger.info("LLM mode: CAPTURE_ONLY (no provider calls)")
         logger.info("LLM input dump directory: %s", dump_dir.resolve())
     else:
         llm_client = create_llm_client(settings=llm_settings)
         if dump_dir is not None:
+            dump_dir.mkdir(parents=True, exist_ok=True)
             from chahi.infrastructure.llm.recording_client import RecordingLLMClient
 
             llm_client = RecordingLLMClient(
@@ -603,12 +617,25 @@ def main() -> None:
         logger.info("Memory store disabled: chỉ read, không save.")
 
     try:
-        # ── 3. Khởi tạo & chạy Use Case ──
+        # ── 3. Khởi tạo Quant Engine & Provider ──
+        # Trong tương lai có thể inject qua factory dựa trên config
+        market_data_provider = MockMarketDataProvider()
+        article_filter = ArticleFilterService()
+        feature_engine = FeatureEngine()
+        rule_engine = RuleEngine()
+        divergence_engine = DivergenceEngine()
+
+        # ── 4. Khởi tạo & chạy Use Case ──
         use_case = GenerateMacroReportUseCase(
             config_reader=config_reader,
             news_fetcher=news_fetcher,
             llm_client=llm_client,
+            market_data_provider=market_data_provider,
             memory_manager=memory_manager,
+            article_filter=article_filter,
+            feature_engine=feature_engine,
+            rule_engine=rule_engine,
+            divergence_engine=divergence_engine,
         )
 
         run_started_at = time.time()

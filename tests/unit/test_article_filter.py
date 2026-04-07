@@ -74,27 +74,29 @@ class TestArticleFilterService:
         service = ArticleFilterService()
         context = AnalysisContext(
             date=datetime(2026, 4, 6, tzinfo=UTC).date(),
-            oil_news=[
-                _article(
-                    title="Fed phát tín hiệu giữ lãi suất",
-                    summary="Fed theo dõi CPI và DXY chặt chẽ.",
-                    url="https://example.com/oil",
-                )
-            ],
-            gold_news=[
-                _article(
-                    title="Giá vàng tăng khi DXY suy yếu",
-                    summary="Gold ETF hút vốn trở lại.",
-                    url="https://example.com/gold",
-                )
-            ],
-            crypto_news=[
-                _article(
-                    title="Bitcoin ETF duy trì dòng vốn vào",
-                    summary="BTC và ETH đồng thuận tăng.",
-                    url="https://example.com/crypto",
-                )
-            ],
+            news_by_category={
+                SourceCategory.OIL_MACRO: [
+                    _article(
+                        title="Fed phát tín hiệu giữ lãi suất",
+                        summary="Fed theo dõi CPI và DXY chặt chẽ.",
+                        url="https://example.com/oil",
+                    )
+                ],
+                SourceCategory.GOLD: [
+                    _article(
+                        title="Giá vàng tăng khi DXY suy yếu",
+                        summary="Gold ETF hút vốn trở lại.",
+                        url="https://example.com/gold",
+                    )
+                ],
+                SourceCategory.CRYPTO: [
+                    _article(
+                        title="Bitcoin ETF duy trì dòng vốn vào",
+                        summary="BTC và ETH đồng thuận tăng.",
+                        url="https://example.com/crypto",
+                    )
+                ],
+            },
         )
 
         hot_keywords = service.extract_hot_keywords(context, max_keywords=5)

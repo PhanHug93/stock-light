@@ -273,30 +273,81 @@ class AnalysisContext:
     """Ngữ cảnh phân tích — gom tin tức theo danh mục cho một ngày.
 
     Đây là input đầu vào cho LLM: tổng hợp toàn bộ tin tức
-    đã fetch được, phân nhóm theo 3 danh mục chính.
+    đã fetch được, phân nhóm theo danh mục.
+
+    Sử dụng ``news_by_category`` (dict) thay vì hard-code từng field
+    để tuân thủ OCP — thêm category mới chỉ cần thêm Enum value.
 
     Attributes:
         date: Ngày phân tích.
-        oil_news: Danh sách tin dầu & vĩ mô.
-        gold_news: Danh sách tin vàng.
-        crypto_news: Danh sách tin crypto.
+        news_by_category: Tin tức phân nhóm theo SourceCategory.
         previous_context: Nhận định của ngày hôm trước (từ Memory).
     """
 
     date: date
-    oil_news: list[Article] = field(default_factory=list)
-    gold_news: list[Article] = field(default_factory=list)
-    crypto_news: list[Article] = field(default_factory=list)
+    news_by_category: dict[SourceCategory, list[Article]] = field(
+        default_factory=dict,
+    )
     previous_context: str | None = None
+
+    # ── Backward-compat: giữ cho test cũ và code chưa migrate ──
+
+    @staticmethod
+    def _compat_init(
+        *,
+        date_val: date,
+        oil_news: list[Article] | None = None,
+        gold_news: list[Article] | None = None,
+        crypto_news: list[Article] | None = None,
+        previous_context: str | None = None,
+        news_by_category: dict[SourceCategory, list[Article]] | None = None,
+    ) -> AnalysisContext:
+        """Factory tạo AnalysisContext từ old-style kwargs hoặc dict.
+
+        Ưu tiên ``news_by_category`` nếu có; ngược lại build từ 3 list.
+        """
+        if news_by_category is not None:
+            return AnalysisContext(
+                date=date_val,
+                news_by_category=news_by_category,
+                previous_context=previous_context,
+            )
+        cat_map: dict[SourceCategory, list[Article]] = {}
+        if oil_news:
+            cat_map[SourceCategory.OIL_MACRO] = oil_news
+        if gold_news:
+            cat_map[SourceCategory.GOLD] = gold_news
+        if crypto_news:
+            cat_map[SourceCategory.CRYPTO] = crypto_news
+        return AnalysisContext(
+            date=date_val,
+            news_by_category=cat_map,
+            previous_context=previous_context,
+        )
+
+    @property
+    def oil_news(self) -> list[Article]:
+        """Backward-compat property."""
+        return self.news_by_category.get(SourceCategory.OIL_MACRO, [])
+
+    @property
+    def gold_news(self) -> list[Article]:
+        """Backward-compat property."""
+        return self.news_by_category.get(SourceCategory.GOLD, [])
+
+    @property
+    def crypto_news(self) -> list[Article]:
+        """Backward-compat property."""
+        return self.news_by_category.get(SourceCategory.CRYPTO, [])
 
     @property
     def total_articles(self) -> int:
         """Tổng số bài viết trên tất cả danh mục.
 
         Returns:
-            Tổng số Article trong cả 3 danh mục.
+            Tổng số Article trong mọi category.
         """
-        return len(self.oil_news) + len(self.gold_news) + len(self.crypto_news)
+        return sum(len(articles) for articles in self.news_by_category.values())
 
     @property
     def is_empty(self) -> bool:

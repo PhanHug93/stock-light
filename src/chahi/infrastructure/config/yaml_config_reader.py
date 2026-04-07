@@ -225,6 +225,15 @@ class YamlConfigReader(IConfigReader):
 
         return result
 
+    def get_debug_settings(self) -> dict[str, Any]:
+        """Lấy các cấu hình debug/đặc biệt.
+
+        Returns:
+            Dictionary debug settings (vd: dump_llm_input_dir).
+        """
+        raw = self._load_raw()
+        return raw.get("debug", {})
+
     # ── Private helpers ─────────────────────────────────────────
 
     def _load_raw(self) -> dict[str, Any]:

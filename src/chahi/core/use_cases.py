@@ -7,7 +7,8 @@ dependencies qua constructor (DI) và expose một method ``execute()``.
 Quy tắc:
     - Use case chỉ phụ thuộc vào core/ interfaces và entities.
     - Không import trực tiếp infrastructure modules.
-    - Prompts được định nghĩa tại đây vì chúng là application logic.
+    - Prompts nằm ở ``core/prompts.py`` (SRP).
+    - Report parsing nằm ở ``core/services/report_parser.py`` (SRP).
 
 Pipeline Phase 8 (Map-Reduce + Feedback Loop):
     1. **Retrieve**: Lấy nhận định cũ từ Memory.
@@ -21,19 +22,30 @@ Pipeline Phase 8 (Map-Reduce + Feedback Loop):
 from __future__ import annotations
 
 import logging
-import re
-from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from chahi.core.entities import AnalysisContext, SourceCategory
+from chahi.core.interfaces import (
+    IConfigReader,
+    ILLMClient,
+    IMemoryManager,
+    INewsFetcher,
+)
+from chahi.core.prompts import CATEGORY_NAMES, MAP_PROMPT, REDUCE_PROMPT
+from chahi.core.services.article_filter import ArticleFilterService
+from chahi.core.services.divergence_engine import DivergenceEngine, DivergenceFlag
+from chahi.core.services.feature_engine import FeatureEngine
+from chahi.core.services.report_parser import extract_summary
+from chahi.core.services.rule_engine import RuleEngine, RuleSignals
 
 if TYPE_CHECKING:
     from chahi.core.entities import Article, SourceConfig
     from chahi.core.interfaces import (
         IConfigReader,
         ILLMClient,
+        IMarketDataProvider,
         IMemoryManager,
         INewsFetcher,
     )
@@ -41,148 +53,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # ═════════════════════════════════════════════════════════════
-# MAP Prompt — Phân tích cục bộ từng nhóm tài sản
+# Prompts & parsing logic đã được tách ra:
+#   - core/prompts.py          → MAP_PROMPT, REDUCE_PROMPT, CATEGORY_NAMES
+#   - core/services/report_parser.py → extract_summary()
 # ═════════════════════════════════════════════════════════════
-
-MAP_PROMPT: str = """\
-Bạn là Chuyên gia Phân tích Tài chính. Input được cung cấp dưới dạng \
-XML-like tags:
-- `<category name="...">`
-- `<article id="...">` với các field:
-  `<title>`, `<source>`, `<published_at>`, `<summary>`.
-
-Hãy đọc kỹ toàn bộ articles của nhóm **{category_name}** và viết BẢN TÓM TẮT gồm \
-đúng 3-5 bullet points.
-
-**YÊU CẦU PHÂN TÍCH**:
-- Ưu tiên dữ kiện có tác động vĩ mô/cross-asset.
-- Bỏ qua thông tin lặp lại hoặc ít giá trị.
-- Chỉ tóm tắt DỮ KIỆN quan trọng, xu hướng, và con số nổi bật.
-- Xác định tâm lý thị trường: tích cực / tiêu cực / trung lập.
-- Ghi nhận yếu tố rủi ro hoặc catalyst tiềm năng.
-- Tuân thủ `<filter_instruction>`: tự deduplicate theo sự kiện và
-  hạ trọng số nguồn kém tin cậy.
-- Viết súc tích, chuyên nghiệp, bằng tiếng Việt.
-- KHÔNG viết heading hay tiêu đề, chỉ bullet points.
-"""
-
-# ═════════════════════════════════════════════════════════════
-# REDUCE Prompt — Tổng hợp & Bản địa hóa Việt Nam
-# ═════════════════════════════════════════════════════════════
-
-REDUCE_PROMPT: str = """\
-Bạn là Giám đốc Đầu tư (CIO) hàng đầu Việt Nam với hơn 20 năm kinh nghiệm \
-điều phối danh mục tài sản lớn, đặc biệt am hiểu sâu sắc về VN-Index và \
-nhóm cổ phiếu Ngân hàng. Bạn có tư duy quân sự: kỷ luật, tàn nhẫn khi sai, \
-và luôn ghi nhật ký chiến trận để không bao giờ lặp lại sai lầm. Bạn cần tận dụng \
-khả năng suy luận sâu kiểu Gemini 3.1 Pro: bám dữ liệu, liên kết tác động ngầm, \
-không suy diễn vô căn cứ.
-
-**NHIỆM VỤ**: Bạn nhận được 3 bản tóm tắt phân tích từ 3 nhóm tài sản \
-(Dầu & Vĩ mô, Vàng, Crypto). Hãy TỔNG HỢP và SUY LUẬN TÁC ĐỘNG CHÉO \
-giữa các lớp tài sản, sau đó viết Báo cáo Phân tích Vĩ mô chuyên sâu.
-
-**ĐỊNH DẠNG INPUT**:
-- `<analysis_date>`: ngày phân tích.
-- `<hot_keywords>`: cụm từ nóng trích từ tin mới.
-- `<filter_instruction>`: quy tắc lọc nhiễu do LLM tự thực hiện.
-- `<map_summaries>`: kết quả MAP theo từng category.
-- `<previous_lessons>`: bài học lịch sử trích từ Memory.
-
-**TRỌNG TÂM SUY LUẬN**:
-- Dòng tiền đang dịch chuyển thế nào giữa Dầu → Vàng → Crypto?
-- Liên hệ giữa DXY, lãi suất Fed, lạm phát → tác động lên từng lớp tài sản.
-- **BẢN ĐỊA HÓA BẮT BUỘC**: Đánh giá tác động của bức tranh vĩ mô toàn cầu \
-lên Thị trường Chứng khoán Việt Nam (VN-Index).
-- **NHÓM NGÂN HÀNG**: Phân tích chi tiết nhóm cổ phiếu ngân hàng VN — \
-hưởng lợi hay chịu áp lực từ tỷ giá USD/VND, lạm phát, lãi suất quốc tế, \
-tăng trưởng tín dụng, nợ xấu? Cơ hội hay rủi ro trong trung-dài hạn?
-
-**ĐỐI CHIẾU QUÁ KHỨ** (BẮT BUỘC nếu có dữ liệu "[NHÌN LẠI QUÁ KHỨ]"):
-- Đối chiếu tin tức hôm nay với nhận định quá khứ.
-- Xác định: xu hướng tiếp diễn hay đảo chiều?
-- Nếu nhận định cũ sai, phân tích tại sao và rút kinh nghiệm.
-- Nếu nhận định cũ đúng, ghi nhận và dự báo bước tiếp theo.
-
-**CẤU TRÚC BÁO CÁO BẮT BUỘC**:
-
-# 📊 Báo cáo Phân tích Vĩ mô — {ngày}
-
-## 1. 🛢️ Dầu & Kinh tế Vĩ mô
-- Xu hướng giá dầu, cung-cầu, OPEC+.
-- Fed, lạm phát, GDP, việc làm → tác động lên thị trường.
-
-## 2. 🥇 Vàng & Kim loại quý
-- Biến động giá vàng, dòng tiền ETF, nhu cầu trú ẩn.
-- Tương quan DXY, lợi suất trái phiếu.
-
-## 3. ₿ Crypto & Tài sản số
-- Bitcoin, Ethereum, altcoin: xu hướng và dòng tiền.
-- Tin pháp lý, ETF, institutional flow.
-
-## 4. 🔄 Dòng tiền Xuyên lớp Tài sản
-- Phân tích dịch chuyển dòng tiền: Dầu ↔ Vàng ↔ Crypto ↔ Cổ phiếu.
-- So sánh nhận định phiên trước với thực tế hôm nay (nếu có).
-
-## 5. 🇻🇳 Tác động lên Thị trường Việt Nam
-- **VN-Index**: Dự báo xu hướng ngắn hạn dựa trên bức tranh vĩ mô.
-- **Nhóm Ngân hàng**: Phân tích chi tiết rủi ro/cơ hội — \
-tỷ giá USD/VND, lãi suất, tăng trưởng tín dụng, nợ xấu.
-- **Các nhóm ngành khác**: Bất động sản, chứng khoán, xuất khẩu.
-- Khuyến nghị hành động cho nhà đầu tư Việt Nam.
-
-## 6. 📋 Tổng kết
-- 3-5 bullet points chốt lại nhận định quan trọng nhất.
-- Dự báo hướng đi cho ngày/tuần tiếp theo.
-- Spotlight: nhóm ngân hàng — mua/giữ/bán?
-
-## 7. 🧠 Sổ Tay Kinh Nghiệm
-**BẮT BUỘC** — Đây là mục QUAN TRỌNG NHẤT cho sự tiến bộ của bạn.
-
-Đọc kỹ phần [NHÌN LẠI QUÁ KHỨ] (nhật ký dự báo & bài học từ phiên trước \
-của chính bạn). Đối chiếu với tin tức thực tế hôm nay và thực hiện:
-
-- **Nếu dự báo SAI**: Tàn nhẫn tự kiểm điểm. Yếu tố nào bạn đã bỏ qua? \
-Dòng tiền đã bẻ lái vì tin tức nào? Đúc kết thành 1 QUY TẮC PHÂN TÍCH MỚI \
-(ví dụ: "Bài học: Khi có tin chiến tranh leo thang, bỏ qua yếu tố lạm phát — \
-dòng tiền sẽ ưu tiên trú ẩn vào Vàng trước khi quay lại cổ phiếu").
-- **Nếu dự báo ĐÚNG**: Ghi nhận yếu tố cốt lõi nào đã giúp dự báo chuẩn xác. \
-Viết thành 1 QUY TẮC ĐỂ PHÁT HUY \
-(ví dụ: "Kinh nghiệm: Khi DXY giảm liên tiếp 3 phiên + CPI hạ nhiệt → \
-Vàng và Crypto đồng loạt tăng, VN-Index hưởng lợi qua nhóm xuất khẩu").
-- **Nếu chưa có dữ liệu quá khứ** (lần đầu chạy): Ghi nhận 2-3 rủi ro/catalyst \
-cần theo dõi cho phiên tiếp theo.
-
-Format mỗi bài học:
-> 📝 **Bài học #{số}**: [Mô tả ngắn gọn quy tắc]
-> - Bối cảnh: [Tình huống dẫn tới bài học]
-> - Quy tắc: [Quy tắc phân tích rút ra]
-
-**QUY TẮC**:
-- Suy luận dựa trên DỮ LIỆU thực tế, không suy đoán vô căn cứ.
-- Ngôn ngữ chuyên nghiệp, súc tích, Giám đốc Đầu tư viết cho team.
-- Trả lời hoàn toàn bằng tiếng Việt.
-- Markdown chuẩn: heading, bullet points, bold/italic.
-- **TUYỆT ĐỐI** bắt đầu phần tổng kết bằng chính xác dòng: `## 6. 📋 Tổng kết`
-- **TUYỆT ĐỐI** bắt đầu phần kinh nghiệm bằng chính xác dòng: \
-`## 7. 🧠 Sổ Tay Kinh Nghiệm`
-"""
-
-# ── Regex trích xuất Tổng kết + Sổ Tay Kinh Nghiệm ──
-# Bắt từ "## Tổng kết" → lấy TOÀN BỘ nội dung đến hết file.
-# Nội dung trả về sẽ chứa CẢ mục 6 (Tổng kết) VÀ mục 7 (Sổ Tay Kinh Nghiệm)
-# để gửi nguyên khối vào IMemoryManager → phiên sau LLM đọc lại.
-_SUMMARY_RE = re.compile(
-    r"##\s*(?:\d+\.?\s*)?(?:📋\s*)?[Tt]ổng\s*[Kk]ết.*?\n(.*)",
-    re.DOTALL,
-)
-
-# ── Category names (tiếng Việt) cho MAP prompt ──
-_CATEGORY_NAMES: dict[str, str] = {
-    "oil_macro": "Dầu & Kinh tế Vĩ mô",
-    "gold": "Vàng & Kim loại quý",
-    "crypto": "Crypto & Tài sản số",
-}
 
 
 # ═════════════════════════════════════════════════════════════
@@ -214,12 +88,22 @@ class GenerateMacroReportUseCase:
         config_reader: IConfigReader,
         news_fetcher: INewsFetcher,
         llm_client: ILLMClient,
+        market_data_provider: IMarketDataProvider | None = None,
         memory_manager: IMemoryManager | None = None,
+        article_filter: ArticleFilterService | None = None,
+        feature_engine: FeatureEngine | None = None,
+        rule_engine: RuleEngine | None = None,
+        divergence_engine: DivergenceEngine | None = None,
     ) -> None:
         self._config_reader = config_reader
         self._news_fetcher = news_fetcher
         self._llm_client = llm_client
+        self._market_data = market_data_provider
         self._memory = memory_manager
+        self._article_filter = article_filter or ArticleFilterService()
+        self._feature_engine = feature_engine or FeatureEngine()
+        self._rule_engine = rule_engine or RuleEngine()
+        self._divergence_engine = divergence_engine or DivergenceEngine()
 
     def execute(self) -> str:
         """Chạy pipeline Map-Reduce với Feedback Loop.
@@ -267,7 +151,9 @@ class GenerateMacroReportUseCase:
         )
 
         # ── Bước 4: Contextualize — hot keywords + semantic memory ──
-        hot_keywords = self._extract_hot_keywords_from_context(context, max_keywords=10)
+        hot_keywords = self._article_filter.extract_hot_keywords(
+            context, max_keywords=10
+        )
         if hot_keywords:
             logger.info("Hot keywords: %s", ", ".join(hot_keywords))
         else:
@@ -305,12 +191,39 @@ class GenerateMacroReportUseCase:
             logger.error("MAP thất bại hoàn toàn. Không có tóm tắt nào.")
             return "⚠️ Không thể phân tích tin tức (MAP failed)."
 
-        # ── Bước 6: REDUCE — Tổng hợp & Bản địa hóa ──
-        logger.info("Bước 6/7: REDUCE — Tổng hợp & Bản địa hóa VN...")
+        # ── Bước 6: QUANT — Định lường & Đối chiếu (Feature, Rule, Divergence) ──
+        logger.info("Bước 6/7: QUANT — Chạy Rule & Divergence Engine...")
+        rule_signals: RuleSignals | None = None
+        divergence_flags: list[DivergenceFlag] = []
+
+        if self._market_data:
+            try:
+                # 1. Lấy dữ liệu thị trường thực tế
+                raw_market = self._fetch_market_data()
+                # 2. Xử lý Features (Market + NLP)
+                # Note: sentiment có thể lấy từ summaries nếu LLM hỗ trợ return JSON,
+                # ở đây ta tạm thời dùng counts đơn giản từ filter hoặc mock.
+                nlp_output = {
+                    "news_positive_count": 0,
+                    "news_negative_count": 0,
+                }  # Placeholder
+                features = self._feature_engine.compute(raw_market, nlp_output)
+                # 3. Rule Engine (Deterministic)
+                rule_signals = self._rule_engine.evaluate(features)
+                # 4. Divergence Engine (Anomaly detection)
+                divergence_flags = self._divergence_engine.evaluate(features)
+                logger.info("  → Quant analysis hoàn tất.")
+            except Exception as exc:
+                logger.warning("  → Quant Layer lỗi, tiếp tục dùng AI thuần: %s", exc)
+
+        # ── Bước 7: REDUCE — Tổng hợp & Bản địa hóa ──
+        logger.info("Bước 7/7: REDUCE — Tổng hợp & Bản địa hóa VN...")
         reduce_input = self._format_reduce_input(
             category_summaries,
             previous_context=combined_context,
             hot_keywords=hot_keywords,
+            rule_signals=rule_signals,
+            divergence_flags=divergence_flags,
         )
         report = self._llm_client.analyze(
             system_prompt=REDUCE_PROMPT,
@@ -322,7 +235,7 @@ class GenerateMacroReportUseCase:
         if self._memory is not None:
             logger.info("Bước 7/7: Lưu nhận định mới vào Memory...")
             try:
-                summary = _extract_summary(report)
+                summary = extract_summary(report)
                 self._memory.save_context(summary)
                 logger.info("  → Đã lưu %d chars vào Memory.", len(summary))
             except Exception as exc:
@@ -357,47 +270,6 @@ class GenerateMacroReportUseCase:
         if semantic:
             return semantic
         return None
-
-    @staticmethod
-    def _extract_hot_keywords_from_context(
-        context: AnalysisContext,
-        max_keywords: int = 10,
-    ) -> list[str]:
-        """Trích hot keywords đơn giản từ title/summary để semantic retrieval."""
-        if max_keywords <= 0:
-            return []
-
-        stop_words = {
-            "the",
-            "and",
-            "for",
-            "with",
-            "from",
-            "this",
-            "that",
-            "những",
-            "các",
-            "với",
-            "trong",
-            "khi",
-            "được",
-            "một",
-        }
-        pattern = re.compile(r"[0-9A-Za-zÀ-ỹ]+")
-        counts: Counter[str] = Counter()
-
-        for article in [
-            *context.oil_news,
-            *context.gold_news,
-            *context.crypto_news,
-        ]:
-            tokens = pattern.findall(f"{article.title} {article.summary}".lower())
-            for token in tokens:
-                if len(token) < 4 or token in stop_words:
-                    continue
-                counts[token] += 1
-
-        return [token for token, _count in counts.most_common(max_keywords)]
 
     # ── MAP: Phân tích từng nhóm ─────────────────────────────
 
@@ -452,26 +324,26 @@ class GenerateMacroReportUseCase:
             logger.warning("  MAP [%s] thất bại: %s", category_name, exc)
             return ""
 
-    def _map_analyze_all(self, context: AnalysisContext) -> dict[str, str]:
-        """Chạy MAP cho cả 3 nhóm tài sản.
+    def _map_analyze_all(self, context: AnalysisContext) -> dict[SourceCategory, str]:
+        """Chạy MAP cho tất cả danh mục tin tức.
 
         Tự động chọn chế độ:
         - Cloud LLM (Gemini): song song qua ThreadPoolExecutor.
         - Local LLM (LM Studio): tuần tự để tránh nghẽn queue.
 
         Args:
-            context: AnalysisContext chứa tin tức.
+            context: AnalysisContext chứa tin tức phân nhóm theo category.
 
         Returns:
-            Dict mapping category_name → bản tóm tắt LLM.
+            Dict mapping SourceCategory → bản tóm tắt LLM.
         """
-        tasks: list[tuple[str, list[Article]]] = [
-            (_CATEGORY_NAMES["oil_macro"], list(context.oil_news)),
-            (_CATEGORY_NAMES["gold"], list(context.gold_news)),
-            (_CATEGORY_NAMES["crypto"], list(context.crypto_news)),
+        tasks: list[tuple[SourceCategory, list[Article]]] = [
+            (cat, list(articles))
+            for cat, articles in context.news_by_category.items()
+            if articles  # Chỉ phân tích nhóm có tin
         ]
 
-        results: dict[str, str] = {}
+        results: dict[SourceCategory, str] = {}
 
         if self._llm_client.supports_concurrency:
             # ── Cloud LLM: song song (auto-scaling) ──
@@ -503,61 +375,71 @@ class GenerateMacroReportUseCase:
 
     # ── REDUCE: Format input ─────────────────────────────────
 
-    @staticmethod
     def _format_reduce_input(
-        summaries: dict[str, str],
+        self,
+        summaries: dict[SourceCategory, str],
         previous_context: str | None = None,
         hot_keywords: list[str] | None = None,
+        rule_signals: RuleSignals | None = None,
+        divergence_flags: list[DivergenceFlag] | None = None,
     ) -> str:
-        """Format đầu vào cho REDUCE step.
-
-        Ghép 3 bản tóm tắt MAP + previous_context thành
-        user_content cho REDUCE prompt.
-
-        Args:
-            summaries: Dict category_name → tóm tắt từ MAP.
-            previous_context: Nhận định phiên trước (Memory).
-            hot_keywords: Danh sách từ khóa nóng từ dữ liệu phiên hiện tại.
-
-        Returns:
-            Chuỗi text formatted cho REDUCE prompt.
-        """
-        today = date.today().strftime("%d/%m/%Y")
-        sections: list[str] = [f"<analysis_date>{today}</analysis_date>\n"]
+        """Format dữ liệu cho REDUCE prompt."""
+        parts = [f"<analysis_date>{date.today().strftime('%d/%m/%Y')}</analysis_date>"]
 
         if hot_keywords:
-            sections.append("<hot_keywords>")
-            sections.append(", ".join(hot_keywords))
-            sections.append("</hot_keywords>\n")
-
-        sections.append("<filter_instruction>")
-        sections.append("- Không xoá dữ liệu gốc; chỉ lọc nhiễu trong suy luận.")
-        sections.append("- Deduplicate theo sự kiện, không làm mất số liệu quan trọng.")
-        sections.append("- Ưu tiên nguồn uy tín khi có thông tin mâu thuẫn.")
-        sections.append("</filter_instruction>\n")
-
-        sections.append("<map_summaries>")
-        ordered_categories = [
-            _CATEGORY_NAMES["oil_macro"],
-            _CATEGORY_NAMES["gold"],
-            _CATEGORY_NAMES["crypto"],
-        ]
-        for category_name in ordered_categories:
-            summary = summaries.get(category_name, "")
-            sections.append(f'  <category name="{category_name}">')
-            sections.append(
-                summary.strip() if summary.strip() else "(Không có dữ liệu)"
-            )
-            sections.append("  </category>")
-        sections.append("</map_summaries>\n")
+            parts.append(f"<hot_keywords>\n{', '.join(hot_keywords)}\n</hot_keywords>")
 
         if previous_context:
-            sections.append("<previous_lessons>")
-            sections.append("🔄 [NHÌN LẠI QUÁ KHỨ]")
-            sections.append(previous_context.strip())
-            sections.append("</previous_lessons>")
+            parts.append(f"<previous_lessons>\n{previous_context}\n</previous_lessons>")
 
-        return "\n".join(sections)
+        if rule_signals:
+            signals_str = "\n".join(
+                f"- {k.replace('_', ' ').title()}: {v}"
+                for k, v in rule_signals.to_dict().items()
+            )
+            parts.append(f"<rule_signals>\n{signals_str}\n</rule_signals>")
+
+        if divergence_flags:
+            flags_str = "\n".join(
+                f"- [{f.severity.upper()}] {f.description}" for f in divergence_flags
+            )
+            parts.append(f"<divergence_alerts>\n{flags_str}\n</divergence_alerts>")
+
+        parts.append("<map_summaries>")
+        for cat, summary in summaries.items():
+            cat_name = CATEGORY_NAMES.get(cat, cat.name)
+            parts.append(
+                f'  <category name="{cat_name}">\n{summary.strip()}\n  </category>'
+            )
+        parts.append("</map_summaries>")
+
+        return "\n\n".join(parts)
+
+    def _fetch_market_data(self) -> dict[str, Any]:
+        """Lấy dữ liệu thô từ provider cho các mã quan trọng."""
+        if not self._market_data:
+            return {}
+
+        data: dict[str, Any] = {}
+        symbols = {
+            "oil_close": "CL=F",
+            "dxy_close": "DX-Y.NYB",
+            "yield_10y": "^TNX",
+            "vnindex_close": "^VNI",
+        }
+
+        for key, sym in symbols.items():
+            try:
+                price = self._market_data.get_price(sym)
+                data[key] = price.get("close")
+                # Lấy thêm giá hôm qua để tính return
+                ohlcv = self._market_data.get_ohlcv(sym, period="2d")
+                if len(ohlcv) >= 2:
+                    data[key.replace("_close", "_prev_close")] = ohlcv[0].get("close")
+            except Exception as exc:
+                logger.debug("Không thể lấy market data cho %s (%s): %s", key, sym, exc)
+
+        return data
 
     # ── Fetch tin tức ─────────────────────────────────────────
 
@@ -575,15 +457,7 @@ class GenerateMacroReportUseCase:
         Returns:
             AnalysisContext chứa tin tức + previous_context.
         """
-        oil_news: list[Article] = []
-        gold_news: list[Article] = []
-        crypto_news: list[Article] = []
-
-        category_map: dict[SourceCategory, list[Article]] = {
-            SourceCategory.OIL_MACRO: oil_news,
-            SourceCategory.GOLD: gold_news,
-            SourceCategory.CRYPTO: crypto_news,
-        }
+        category_map: dict[SourceCategory, list[Article]] = {cat: [] for cat in sources}
 
         # Chuẩn bị danh sách tasks
         tasks: list[tuple[SourceCategory, SourceConfig]] = []
@@ -591,34 +465,22 @@ class GenerateMacroReportUseCase:
             for source in source_list:
                 tasks.append((category, source))
 
-        # Ưu tiên fetch_many (async/batch optimized), fallback tuần tự.
-        from chahi.core.interfaces import INewsFetcher
-
-        fetch_many_impl = getattr(type(self._news_fetcher), "fetch_many", None)
-        supports_batch = (
-            isinstance(self._news_fetcher, INewsFetcher)
-            and fetch_many_impl is not None
-            and fetch_many_impl is not INewsFetcher.fetch_many
-        )
-
-        if supports_batch:
+        # Ưu tiên fetch_many (async/batch) nếu fetcher hỗ trợ.
+        if self._news_fetcher.supports_batch:
             try:
                 batch_result = self._news_fetcher.fetch_many(tasks=tasks, limit=10)
-                oil_news.extend(batch_result.get(SourceCategory.OIL_MACRO, []))
-                gold_news.extend(batch_result.get(SourceCategory.GOLD, []))
-                crypto_news.extend(batch_result.get(SourceCategory.CRYPTO, []))
+                for cat, articles in batch_result.items():
+                    category_map.setdefault(cat, []).extend(articles)
                 return AnalysisContext(
                     date=date.today(),
-                    oil_news=oil_news,
-                    gold_news=gold_news,
-                    crypto_news=crypto_news,
+                    news_by_category=category_map,
                     previous_context=previous_context,
                 )
             except Exception as exc:
                 logger.warning("fetch_many thất bại, fallback tuần tự: %s", exc)
 
         for category, source in tasks:
-            target = category_map.get(category, [])
+            target = category_map.setdefault(category, [])
             try:
                 articles = self._news_fetcher.fetch_news(
                     url=source.url,
@@ -648,32 +510,9 @@ class GenerateMacroReportUseCase:
 
         return AnalysisContext(
             date=date.today(),
-            oil_news=oil_news,
-            gold_news=gold_news,
-            crypto_news=crypto_news,
+            news_by_category=category_map,
             previous_context=previous_context,
         )
 
 
-def _extract_summary(report: str) -> str:
-    """Trích xuất phần Tổng kết + Sổ Tay Kinh Nghiệm từ báo cáo.
-
-    Tìm section ``## 6. 📋 Tổng kết`` và lấy TOÀN BỘ nội dung phía sau,
-    bao gồm cả ``## 7. 🧠 Sổ Tay Kinh Nghiệm``. Khối này được gửi
-    nguyên vẹn vào ``IMemoryManager`` để phiên sau LLM đọc lại và
-    tự đối chiếu (Self-Reflection).
-
-    Nếu không tìm được, lưu 500 ký tự cuối cùng của report.
-
-    Args:
-        report: Nội dung báo cáo Markdown đầy đủ.
-
-    Returns:
-        Phần tổng kết + kinh nghiệm đã trích xuất.
-    """
-    match = _SUMMARY_RE.search(report)
-    if match:
-        return match.group(1).strip()
-
-    # Fallback: lấy phần cuối report
-    return report[-500:].strip() if len(report) > 500 else report.strip()
+# _extract_summary đã chuyển sang core/services/report_parser.py

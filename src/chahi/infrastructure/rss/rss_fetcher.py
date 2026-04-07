@@ -342,6 +342,11 @@ class RSSNewsFetcher(INewsFetcher):
                 logger.debug("Không thể đóng diskcache fulltext.", exc_info=True)
         logger.debug("RSSNewsFetcher resources closed.")
 
+    @property
+    def supports_batch(self) -> bool:
+        """RSSNewsFetcher hỗ trợ async batch qua httpx.AsyncClient."""
+        return True
+
     def fetch_news(self, url: str, limit: int = 10) -> list[Article]:
         """Cào tin tức từ một RSS feed URL.
 

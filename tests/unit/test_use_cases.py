@@ -11,17 +11,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from chahi.core.entities import (
-    Article,
-    SourceCategory,
-    SourceConfig,
-)
-from chahi.core.use_cases import (
-    MAP_PROMPT,
-    REDUCE_PROMPT,
-    GenerateMacroReportUseCase,
-    _extract_summary,
-)
+from chahi.core.entities import Article, SourceCategory, SourceConfig
+from chahi.core.prompts import MAP_PROMPT, REDUCE_PROMPT
+from chahi.core.services.report_parser import extract_summary
+from chahi.core.use_cases import GenerateMacroReportUseCase
 
 # ─────────────────────────────────────────────────────────────
 # Fixtures
@@ -68,6 +61,9 @@ def mock_config_reader() -> MagicMock:
 def mock_fetcher() -> MagicMock:
     """Mock INewsFetcher trả về 1 article cho mỗi URL."""
     fetcher = MagicMock()
+    # By default, mock properties evaluate to truthy.
+    # We want to test fetch_news fallback.
+    fetcher.supports_batch = False
     fetcher.fetch_news.return_value = [_make_article(title="Article 1")]
     return fetcher
 
@@ -210,6 +206,7 @@ class TestExecuteMapReduce:
         }
 
         mock_fetcher = MagicMock()
+        mock_fetcher.supports_batch = False
         mock_fetcher.fetch_news.return_value = [_make_article(title="Fed Policy")]
 
         mock_llm = MagicMock()
@@ -253,6 +250,7 @@ class TestExecuteEdgeCases:
     ) -> None:
         """Khi không fetch được tin nào, trả về warning message."""
         empty_fetcher = MagicMock()
+        empty_fetcher.supports_batch = False
         empty_fetcher.fetch_news.return_value = []
 
         use_case = GenerateMacroReportUseCase(
@@ -272,6 +270,7 @@ class TestExecuteEdgeCases:
     ) -> None:
         """Khi một source lỗi, vẫn tiếp tục fetch các source khác."""
         partial_fetcher = MagicMock()
+        partial_fetcher.supports_batch = False
 
         def side_effect(url: str, limit: int = 10) -> list[Article]:
             if "reuters" in url:
@@ -328,22 +327,22 @@ class TestPrompts:
 
 
 # ─────────────────────────────────────────────────────────────
-# _extract_summary
+# extract_summary (now in report_parser but tested here for ease)
 # ─────────────────────────────────────────────────────────────
 
 
 class TestExtractSummary:
-    """Tests cho _extract_summary()."""
+    """Tests cho extract_summary()."""
 
     def test_extracts_summary_section(self) -> None:
         """Phải trích xuất phần sau '## 6. 📋 Tổng kết'."""
         report = "Some content\n## 6. 📋 Tổng kết\n- Ý 1\n- Ý 2"
-        result = _extract_summary(report)
+        result = extract_summary(report)
         assert "Ý 1" in result
         assert "Ý 2" in result
 
     def test_fallback_when_no_summary(self) -> None:
         """Khi không có section Tổng kết, lấy 500 chars cuối."""
         report = "A very long report " * 50
-        result = _extract_summary(report)
+        result = extract_summary(report)
         assert len(result) <= 500
